@@ -24,7 +24,8 @@
 | Dépenses | création, liste paginée/filtrée et correction transactionnelle avec UI | build testé |
 | Retours | transaction multi-articles, dette avant espèces, stock, historique et reçu simple | calculs Rust et build testés; intégration à étendre |
 | Employés | liste, création/modification, rôles, activation et réinitialisation; activité détaillée à ajouter | build testé, tests d’intégration à étendre |
-| Rapports détaillés/exports CSV | manquant | non testé |
+| Rapports | ventes, bénéfice, stock, clients, fournisseurs, dépenses et employés avec filtres/pagination; clôtures détaillées partielles | build et lancement testés |
+| Exports CSV | produits, stock, clients, fournisseurs et ventes détaillés; autres exports synthétiques | sécurité CSV testée |
 | Paramètres | complet pour les champs affichés | test manuel restant |
 | Sauvegarde/restauration | complet | test manuel restant |
 | Sauvegarde automatique | configuration seulement | non planifiée |

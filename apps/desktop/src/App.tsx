@@ -275,6 +275,7 @@ const nav = [
   ["purchases", "Achats", "purchases.view"],
   ["expenses", "Dépenses", "expenses.view"],
   ["employees", "Employés", "workers.view"],
+  ["reports", "Rapports", "reports.sales"],
   ["register", "Caisses", "register.open"],
   ["settings", "Paramètres", "settings.manage"],
   ["backup", "Sauvegarde", "backup.manage"],
@@ -428,6 +429,18 @@ function Shell({
                   <Employees user={user} />
                 </Allowed>
               }
+            />
+            <Route
+              path="/reports"
+              element={
+                <Allowed u={user} p="reports.sales">
+                  <ReportsHub user={user} />
+                </Allowed>
+              }
+            />
+            <Route
+              path="/reports/:kind"
+              element={<ReportsPage user={user} />}
             />
             <Route
               path="/register"
@@ -1666,6 +1679,259 @@ function Settings() {
     </Page>
   );
 }
+const reportDefinitions = [
+  ["sales", "Ventes", "reports.sales"],
+  ["profit", "Bénéfices", "reports.profit"],
+  ["stock", "Stock", "reports.stock"],
+  ["customers", "Crédits clients", "reports.customers"],
+  ["suppliers", "Dettes fournisseurs", "reports.suppliers"],
+  ["expenses", "Dépenses", "reports.expenses"],
+  ["workers", "Activité employés", "reports.workers"],
+  ["daily_closing", "Clôtures quotidiennes", "reports.daily_closing"],
+] as const;
+function ReportsHub({ user }: { user: User }) {
+  return (
+    <Page title="Rapports" sub="Indicateurs calculés depuis la base SQLite">
+      <div className="cards">
+        {reportDefinitions
+          .filter((x) => user.permissions.includes(x[2]))
+          .map((x) => (
+            <article className="card" key={x[0]}>
+              <h3>{x[1]}</h3>
+              <p>Données réelles, filtres et export sécurisé.</p>
+              <NavLink className="link" to={`/reports/${x[0]}`}>
+                Ouvrir le rapport →
+              </NavLink>
+            </article>
+          ))}
+      </div>
+    </Page>
+  );
+}
+type ReportResponse = {
+  kind: string;
+  start: string;
+  end: string;
+  summary: Record<string, number>;
+  rows: Array<Record<string, unknown>>;
+  page: number;
+  pageSize: number;
+  totalRows: number;
+  totalPages: number;
+};
+function presetDates(preset: string) {
+  const end = new Date(),
+    start = new Date(end);
+  if (preset === "yesterday") {
+    start.setDate(start.getDate() - 1);
+    end.setDate(end.getDate() - 1);
+  } else if (preset === "7") {
+    start.setDate(start.getDate() - 6);
+  } else if (preset === "30") {
+    start.setDate(start.getDate() - 29);
+  } else if (preset === "month") {
+    start.setDate(1);
+  } else if (preset === "previous") {
+    start.setMonth(start.getMonth() - 1, 1);
+    end.setDate(0);
+  }
+  const f = (d: Date) => d.toISOString().slice(0, 10);
+  return { start: f(start), end: f(end) };
+}
+function ReportsPage({ user }: { user: User }) {
+  const { kind = "sales" } = useParams(),
+    definition = reportDefinitions.find((x) => x[0] === kind),
+    permission = definition?.[2];
+  const [range, setRange] = useState(() => presetDates("30")),
+    [search, setSearch] = useState(""),
+    [page, setPage] = useState(1),
+    [data, setData] = useState<ReportResponse | null>(null),
+    [message, setMessage] = useState(""),
+    a = useAsync();
+  const load = useCallback(
+    () =>
+      a
+        .run(() =>
+          api.call<ReportResponse>("run_report", {
+            kind,
+            start: range.start,
+            end: range.end,
+            search: search || null,
+            page,
+            pageSize: 25,
+          }),
+        )
+        .then((x) => x && setData(x)),
+    [a, kind, range, search, page],
+  );
+  useEffect(() => {
+    if (permission && user.permissions.includes(permission)) void load();
+  }, [load, permission, user.permissions]);
+  const exportData = async () => {
+    const exportKind = ["profit", "daily_closing"].includes(kind)
+      ? "sales"
+      : kind === "stock"
+        ? "stock"
+        : kind;
+    const destination = await save({
+      defaultPath: `${kind}_${range.start}_${range.end}.csv`,
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+    });
+    if (!destination) return;
+    void a
+      .run(() =>
+        api.call<{ rowCount: number }>("export_csv", {
+          kind: exportKind,
+          destination,
+          start: range.start,
+          end: range.end,
+        }),
+      )
+      .then((x) => x && setMessage(`${x.rowCount} ligne(s) exportée(s)`));
+  };
+  if (!definition || !permission || !user.permissions.includes(permission))
+    return <Navigate to="/reports" replace />;
+  return (
+    <Page
+      title={definition[1]}
+      sub={`Période du ${range.start} au ${range.end}`}
+      action={
+        <button onClick={exportData} disabled={a.busy}>
+          Exporter CSV
+        </button>
+      }
+    >
+      <ErrorBox message={a.error} />
+      {message && <div className="success">{message}</div>}
+      <div className="toolbar">
+        <select
+          onChange={(e) => {
+            setRange(presetDates(e.target.value));
+            setPage(1);
+          }}
+          defaultValue="30"
+        >
+          <option value="today">Aujourd’hui</option>
+          <option value="yesterday">Hier</option>
+          <option value="7">7 derniers jours</option>
+          <option value="30">30 derniers jours</option>
+          <option value="month">Mois en cours</option>
+          <option value="previous">Mois précédent</option>
+        </select>
+        <input
+          type="date"
+          value={range.start}
+          onChange={(e) => setRange((r) => ({ ...r, start: e.target.value }))}
+        />
+        <input
+          type="date"
+          value={range.end}
+          onChange={(e) => setRange((r) => ({ ...r, end: e.target.value }))}
+        />
+        <input
+          placeholder="Rechercher…"
+          value={search}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPage(1);
+          }}
+        />
+        <button onClick={() => void load()}>Actualiser</button>
+      </div>
+      {!data ? (
+        <div className="card">Chargement…</div>
+      ) : (
+        <>
+          <div className="metrics">
+            {Object.entries(data.summary)
+              .slice(0, 8)
+              .map(([k, v]) => (
+                <article key={k}>
+                  <small>{reportLabel(k)}</small>
+                  <strong>
+                    {k.toLowerCase().includes("cents") ? money(v) : v}
+                  </strong>
+                </article>
+              ))}
+          </div>
+          {data.rows.length ? (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    {Object.keys(data.rows[0]).map((k) => (
+                      <th key={k}>{reportLabel(k)}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.rows.map((row, i) => (
+                    <tr key={i}>
+                      {Object.entries(row).map(([k, v]) => (
+                        <td key={k}>
+                          {k.toLowerCase().includes("cents") &&
+                          typeof v === "number"
+                            ? money(v)
+                            : String(v ?? "—")}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <Empty text="Aucune ligne pour cette période" />
+          )}
+          <div className="actions">
+            <button
+              className="secondary"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => p - 1)}
+            >
+              Précédent
+            </button>
+            <span>
+              Page {data.page} / {Math.max(1, data.totalPages)}
+            </span>
+            <button
+              className="secondary"
+              disabled={page >= data.totalPages}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              Suivant
+            </button>
+          </div>
+        </>
+      )}
+    </Page>
+  );
+}
+function reportLabel(key: string) {
+  const labels: Record<string, string> = {
+    grossCents: "Ventes brutes",
+    returnedCents: "Retours",
+    cashCents: "Espèces",
+    creditCents: "Crédit",
+    count: "Nombre",
+    revenueCents: "Revenu net",
+    costCents: "Coût",
+    grossProfitCents: "Marge brute",
+    expensesCents: "Dépenses",
+    netCents: "Résultat estimé",
+    margin: "Marge %",
+    units: "Unités",
+    valueCents: "Valeur stock",
+    sellingValueCents: "Valeur potentielle",
+    low: "Stock faible",
+    out: "Rupture",
+    withDebt: "Avec dette",
+    debtCents: "Dette totale",
+    correctionCents: "Corrections",
+  };
+  return labels[key] ?? key.replace(/([A-Z])/g, " $1");
+}
+
 function ChangePassword({
   user,
   done,

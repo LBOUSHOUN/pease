@@ -13,6 +13,7 @@ Application de caisse locale pour papeterie/librairie marocaine, construite avec
 - clients, dette et règlements comptants ;
 - fournisseurs, règlements et achats multi-lignes transactionnels ;
 - saisie transactionnelle des dépenses ;
+- rapports SQLite paginés et exports CSV compatibles Excel français ;
 - tableau de bord réel, paramètres, impression WebView et sauvegarde/restauration validée.
 
 Consultez `IMPLEMENTATION_STATUS.md` pour les limites actuelles.

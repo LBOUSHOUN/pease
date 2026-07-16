@@ -1,5 +1,7 @@
 mod db;
+mod exports;
 mod operations;
+mod reports;
 mod workforce;
 use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
@@ -910,7 +912,9 @@ pub fn run() {
             workforce::list_workers,
             workforce::save_worker,
             workforce::reset_worker_password,
-            workforce::change_current_password
+            workforce::change_current_password,
+            reports::run_report,
+            exports::export_csv
         ])
         .run(tauri::generate_context!())
         .expect("error while running Maktaba POS")
