@@ -1,4 +1,5 @@
 mod db;
+mod operations;
 use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
@@ -874,7 +875,14 @@ pub fn run() {
             get_settings,
             save_settings,
             backup_database,
-            restore_database
+            restore_database,
+            operations::list_suppliers,
+            operations::save_supplier,
+            operations::toggle_supplier,
+            operations::supplier_payment,
+            operations::create_purchase,
+            operations::create_expense,
+            operations::calculate_return_split
         ])
         .run(tauri::generate_context!())
         .expect("error while running Maktaba POS")
