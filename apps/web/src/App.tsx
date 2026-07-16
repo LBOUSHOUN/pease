@@ -78,6 +78,43 @@ const SalesPage = lazy(() => phase3().then((m) => ({ default: m.SalesPage })));
 const SaleDetails = lazy(() =>
   phase3().then((m) => ({ default: m.SaleDetails })),
 );
+const phase4 = () => import("./Phase4");
+const SuppliersPage = lazy(() =>
+    phase4().then((m) => ({ default: m.SuppliersPage })),
+  ),
+  SupplierForm = lazy(() =>
+    phase4().then((m) => ({ default: m.SupplierForm })),
+  ),
+  SupplierDetails = lazy(() =>
+    phase4().then((m) => ({ default: m.SupplierDetails })),
+  ),
+  SupplierPayment = lazy(() =>
+    phase4().then((m) => ({ default: m.SupplierPayment })),
+  ),
+  PurchasesPage = lazy(() =>
+    phase4().then((m) => ({ default: m.PurchasesPage })),
+  ),
+  PurchaseForm = lazy(() =>
+    phase4().then((m) => ({ default: m.PurchaseForm })),
+  ),
+  PurchaseDetails = lazy(() =>
+    phase4().then((m) => ({ default: m.PurchaseDetails })),
+  ),
+  ExpensesPage = lazy(() =>
+    phase4().then((m) => ({ default: m.ExpensesPage })),
+  ),
+  ExpenseForm = lazy(() => phase4().then((m) => ({ default: m.ExpenseForm }))),
+  ExpenseDetails = lazy(() =>
+    phase4().then((m) => ({ default: m.ExpenseDetails })),
+  ),
+  ExpenseCorrection = lazy(() =>
+    phase4().then((m) => ({ default: m.ExpenseCorrection })),
+  ),
+  ReturnsPage = lazy(() => phase4().then((m) => ({ default: m.ReturnsPage }))),
+  ReturnForm = lazy(() => phase4().then((m) => ({ default: m.ReturnForm }))),
+  ReturnDetails = lazy(() =>
+    phase4().then((m) => ({ default: m.ReturnDetails })),
+  );
 function field(f: FormData, n: string) {
   return String(f.get(n) ?? "");
 }
@@ -451,6 +488,18 @@ function Layout({
           {user.permissions.includes("customers.view") && (
             <NavLink to="/customers">Clients</NavLink>
           )}
+          {user.permissions.includes("suppliers.view") && (
+            <NavLink to="/suppliers">Fournisseurs</NavLink>
+          )}
+          {user.permissions.includes("purchases.view") && (
+            <NavLink to="/purchases">Achats</NavLink>
+          )}
+          {user.permissions.includes("expenses.view") && (
+            <NavLink to="/expenses">Dépenses</NavLink>
+          )}
+          {user.permissions.includes("returns.view") && (
+            <NavLink to="/returns">Retours</NavLink>
+          )}
         </nav>
         <footer>
           {logoutError && <small role="alert">{logoutError}</small>}
@@ -664,6 +713,134 @@ function Layout({
             element={
               <Lazy>
                 <SaleDetails />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/suppliers"
+            element={
+              <Lazy>
+                <SuppliersPage user={user} />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/suppliers/new"
+            element={
+              <Lazy>
+                <SupplierForm />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/suppliers/:id"
+            element={
+              <Lazy>
+                <SupplierDetails user={user} />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/suppliers/:id/edit"
+            element={
+              <Lazy>
+                <SupplierForm edit />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/suppliers/:id/payment"
+            element={
+              <Lazy>
+                <SupplierPayment />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/purchases"
+            element={
+              <Lazy>
+                <PurchasesPage />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/purchases/new"
+            element={
+              <Lazy>
+                <PurchaseForm />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/purchases/:id"
+            element={
+              <Lazy>
+                <PurchaseDetails />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/expenses"
+            element={
+              <Lazy>
+                <ExpensesPage />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/expenses/new"
+            element={
+              <Lazy>
+                <ExpenseForm />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/expenses/:id"
+            element={
+              <Lazy>
+                <ExpenseDetails user={user} />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/expenses/:id/correct"
+            element={
+              <Lazy>
+                <ExpenseCorrection />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/returns"
+            element={
+              <Lazy>
+                <ReturnsPage />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/returns/new"
+            element={
+              <Lazy>
+                <ReturnForm />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/returns/:id"
+            element={
+              <Lazy>
+                <ReturnDetails />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/sales/:id/return"
+            element={
+              <Lazy>
+                <ReturnForm />
               </Lazy>
             }
           />

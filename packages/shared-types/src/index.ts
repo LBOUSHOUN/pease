@@ -265,3 +265,130 @@ export interface SaleDetail extends SaleListRow {
   shopAddress: string | null;
   receiptFooter: string | null;
 }
+export interface Supplier {
+  id: number;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  address: string | null;
+  notes: string | null;
+  currentDebtCents: number;
+  isActive: boolean;
+  createdBy: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface SupplierListResponse extends Pagination {
+  rows: Supplier[];
+}
+export interface SupplierLedgerTransaction {
+  id: number;
+  supplierId: number;
+  purchaseId: number | null;
+  registerSessionId: number | null;
+  transactionType: "purchase_credit" | "supplier_payment";
+  paymentSource: string | null;
+  amountCents: number;
+  balanceBeforeCents: number;
+  balanceAfterCents: number;
+  notes: string | null;
+  workerName: string;
+  createdAt: string;
+}
+export interface SupplierLedgerResponse extends Pagination {
+  rows: SupplierLedgerTransaction[];
+}
+export interface PurchaseListRow {
+  id: number;
+  purchaseNumber: string;
+  supplierId: number;
+  supplierName: string;
+  workerName: string;
+  totalCents: number;
+  cashPaidCents: number;
+  creditAmountCents: number;
+  paymentMode: PaymentMode;
+  paymentSource: string;
+  invoiceNumber: string | null;
+  invoiceDate: string | null;
+  itemCount: number;
+  createdAt: string;
+}
+export interface PurchaseListResponse extends Pagination {
+  rows: PurchaseListRow[];
+}
+export interface PurchaseItem {
+  id: number;
+  productId: number;
+  productName: string;
+  quantity: number;
+  purchaseUnitPriceCents: number;
+  lineTotalCents: number;
+}
+export interface PurchaseDetail extends PurchaseListRow {
+  notes: string | null;
+  items: PurchaseItem[];
+}
+export interface Expense {
+  id: number;
+  category: string;
+  description: string;
+  amountCents: number;
+  paymentSource: string;
+  registerSessionId: number | null;
+  expenseDate: string;
+  status: string;
+  correctionOfExpenseId: number | null;
+  correctionReason: string | null;
+  notes: string | null;
+  workerName: string;
+  createdAt: string;
+}
+export interface ExpenseListResponse extends Pagination {
+  rows: Expense[];
+}
+export interface ReturnableItem {
+  id: number;
+  productId: number;
+  productName: string;
+  productType: ProductType;
+  quantity: number;
+  returnedQuantity: number;
+  returnableQuantity: number;
+  unitPriceCents: number;
+  returnableValueCents: number;
+}
+export interface ReturnListRow {
+  id: number;
+  returnNumber: string;
+  saleId: number;
+  saleNumber: string;
+  customerName: string | null;
+  workerName: string;
+  totalCents: number;
+  debtReductionCents: number;
+  cashRefundCents: number;
+  status: string;
+  createdAt: string;
+}
+export interface ReturnListResponse extends Pagination {
+  rows: ReturnListRow[];
+}
+export interface ReturnItem {
+  id: number;
+  saleItemId: number;
+  productName: string;
+  quantity: number;
+  amountCents: number;
+  restock: boolean;
+  condition: string | null;
+}
+export interface ReturnDetail extends ReturnListRow {
+  reason: string;
+  items: ReturnItem[];
+}
+export interface RefundAllocation {
+  totalCents: number;
+  debtReductionCents: number;
+  cashRefundCents: number;
+}

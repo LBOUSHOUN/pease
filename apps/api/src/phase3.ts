@@ -46,7 +46,7 @@ const summary = (row?: Row) => ({
 });
 const expectedQuery = (tx: typeof sql, id: number) => tx<Row[]>`
   select r.opening_amount_cents,
-    coalesce(sum(case when m.movement_type in ('cash_sale','customer_debt_payment','register_adjustment_in') then m.amount_cents when m.movement_type='register_adjustment_out' then -m.amount_cents else 0 end),0)::bigint cash_delta,
+    coalesce(sum(case when m.movement_type in ('cash_sale','customer_debt_payment','register_adjustment_in','expense_correction') then m.amount_cents when m.movement_type in ('register_adjustment_out','purchase_cash','supplier_payment','expense','customer_refund') then -m.amount_cents else 0 end),0)::bigint cash_delta,
     coalesce(sum(m.amount_cents) filter(where m.movement_type='cash_sale'),0)::bigint cash_sales_cents,
     coalesce(sum(m.amount_cents) filter(where m.movement_type='customer_debt_payment'),0)::bigint debt_payments_cents,
     count(m.id)::int cash_movement_count,

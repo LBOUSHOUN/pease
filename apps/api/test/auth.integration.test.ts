@@ -1187,3 +1187,219 @@ describe("online register, customers, credit and sales", () => {
       ).toBe(403);
   });
 });
+
+async function phase4Supplier(session: string) {
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/suppliers",
+    headers: { cookie: session },
+    payload: { name: "Atlas Distribution", phone: "+212600000001" },
+  });
+  expect(response.statusCode).toBe(201);
+  return response.json();
+}
+
+describe("online suppliers, purchases, expenses and returns", () => {
+  it("records an idempotent credit purchase, stock, price and supplier ledger", async () => {
+    const session = await phase2Owner(),
+      product = await phase3Product(session, 2),
+      supplier = await phase4Supplier(session),
+      key = crypto.randomUUID(),
+      purchase = () =>
+        app.inject({
+          method: "POST",
+          url: "/api/purchases",
+          headers: { cookie: session },
+          payload: {
+            supplierId: supplier.id,
+            items: [
+              {
+                productId: product.id,
+                quantity: 3,
+                purchaseUnitPriceCents: 425,
+              },
+            ],
+            paymentMode: "credit",
+            paymentSource: "external_cash",
+            idempotencyKey: key,
+          },
+        });
+    const results = await Promise.all([purchase(), purchase()]);
+    expect(results.map((r) => r.statusCode).sort()).toEqual([200, 201]);
+    expect(new Set(results.map((r) => r.json().id)).size).toBe(1);
+    const [stock] =
+        await database.sql`select current_stock,purchase_price_cents from products where id=${product.id}`,
+      [debt] =
+        await database.sql`select current_debt_cents from suppliers where id=${supplier.id}`,
+      ledger = await app.inject({
+        url: `/api/suppliers/${supplier.id}/ledger`,
+        headers: { cookie: session },
+      });
+    expect(Number(stock!.current_stock)).toBe(5);
+    expect(Number(stock!.purchase_price_cents)).toBe(425);
+    expect(Number(debt!.current_debt_cents)).toBe(1275);
+    expect(ledger.json().rows[0].transactionType).toBe("purchase_credit");
+  });
+
+  it("pays supplier debt and prevents concurrent overpayment", async () => {
+    const session = await phase2Owner(),
+      product = await phase3Product(session),
+      supplier = await phase4Supplier(session);
+    await app.inject({
+      method: "POST",
+      url: "/api/purchases",
+      headers: { cookie: session },
+      payload: {
+        supplierId: supplier.id,
+        items: [
+          { productId: product.id, quantity: 1, purchaseUnitPriceCents: 1000 },
+        ],
+        paymentMode: "credit",
+        paymentSource: "external_cash",
+        idempotencyKey: crypto.randomUUID(),
+      },
+    });
+    const pay = () =>
+      app.inject({
+        method: "POST",
+        url: `/api/suppliers/${supplier.id}/payments`,
+        headers: { cookie: session },
+        payload: {
+          amountCents: 700,
+          paymentSource: "external_cash",
+          idempotencyKey: crypto.randomUUID(),
+        },
+      });
+    const results = await Promise.all([pay(), pay()]);
+    expect(results.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+    const [row] =
+      await database.sql`select current_debt_cents from suppliers where id=${supplier.id}`;
+    expect(Number(row!.current_debt_cents)).toBe(300);
+  });
+
+  it("creates and immutably corrects a register expense idempotently", async () => {
+    const session = await phase2Owner();
+    await openRegister(session);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/expenses",
+      headers: { cookie: session },
+      payload: {
+        category: "Transport",
+        description: "Livraison urgente",
+        amountCents: 2500,
+        paymentSource: "cash_register",
+        expenseDate: "2026-07-16",
+        idempotencyKey: crypto.randomUUID(),
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const key = crypto.randomUUID(),
+      correct = () =>
+        app.inject({
+          method: "POST",
+          url: `/api/expenses/${created.json().id}/correct`,
+          headers: { cookie: session },
+          payload: {
+            reason: "Facture fournisseur annulée",
+            idempotencyKey: key,
+          },
+        });
+    const first = await correct(),
+      duplicate = await correct();
+    expect(first.statusCode).toBe(201);
+    expect(duplicate.statusCode).toBe(200);
+    const rows =
+      await database.sql`select amount_cents,status,correction_of_id from expenses order by id`;
+    expect(rows.map((r) => Number(r.amount_cents))).toEqual([2500, -2500]);
+    expect(rows[0]!.status).toBe("corrected");
+    expect(Number(rows[1]!.correction_of_id)).toBe(created.json().id);
+  });
+
+  it("allocates a partial-sale return credit-first and restocks only when requested", async () => {
+    const session = await phase2Owner(),
+      product = await phase3Product(session, 3),
+      customer = await phase3Customer(session);
+    await openRegister(session);
+    const saleResponse = await createSale(session, product.id, {
+      customerId: customer.id,
+      paymentMode: "partial",
+      cashPaidCents: 500,
+    });
+    expect(saleResponse.statusCode).toBe(201);
+    const sale = saleResponse.json(),
+      detail = await app.inject({
+        url: `/api/sales/${sale.id}`,
+        headers: { cookie: session },
+      }),
+      saleItem = detail.json().items[0];
+    const returned = await app.inject({
+      method: "POST",
+      url: "/api/returns",
+      headers: { cookie: session },
+      payload: {
+        saleId: sale.id,
+        items: [{ saleItemId: saleItem.id, quantity: 1, restock: true }],
+        reason: "Article défectueux",
+        idempotencyKey: crypto.randomUUID(),
+      },
+    });
+    expect(returned.statusCode).toBe(201);
+    expect(returned.json()).toMatchObject({
+      totalCents: 1250,
+      debtReductionCents: 750,
+      cashRefundCents: 500,
+    });
+    const [stock] =
+        await database.sql`select current_stock from products where id=${product.id}`,
+      [debt] =
+        await database.sql`select current_debt_cents from customers where id=${customer.id}`;
+    expect(Number(stock!.current_stock)).toBe(3);
+    expect(Number(debt!.current_debt_cents)).toBe(0);
+  });
+
+  it("allows only one concurrent return of the same sold quantity", async () => {
+    const session = await phase2Owner(),
+      product = await phase3Product(session, 1);
+    await openRegister(session);
+    const sale = (await createSale(session, product.id)).json(),
+      detail = await app.inject({
+        url: `/api/sales/${sale.id}`,
+        headers: { cookie: session },
+      }),
+      item = detail.json().items[0];
+    const submit = () =>
+      app.inject({
+        method: "POST",
+        url: "/api/returns",
+        headers: { cookie: session },
+        payload: {
+          saleId: sale.id,
+          items: [{ saleItemId: item.id, quantity: 1, restock: false }],
+          reason: "Retour concurrent",
+          idempotencyKey: crypto.randomUUID(),
+        },
+      });
+    const results = await Promise.all([submit(), submit()]);
+    expect(results.map((r) => r.statusCode).sort()).toEqual([201, 409]);
+  });
+
+  it("keeps Phase 4 list endpoints responsive", async () => {
+    const session = await phase2Owner(),
+      urls = [
+        "/api/suppliers",
+        "/api/purchases",
+        "/api/expenses",
+        "/api/returns",
+      ],
+      timings: Record<string, number> = {};
+    for (const url of urls) {
+      const start = performance.now(),
+        response = await app.inject({ url, headers: { cookie: session } });
+      timings[url] = Number((performance.now() - start).toFixed(2));
+      expect(response.statusCode).toBe(200);
+      expect(timings[url]).toBeLessThan(1000);
+    }
+    console.info("PHASE4_TIMINGS_MS", timings);
+  });
+});

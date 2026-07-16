@@ -278,3 +278,89 @@ export const registerMovementFiltersSchema = paginationSchema.extend({
   startDate: z.string().date().optional(),
   endDate: z.string().date().optional(),
 });
+export const supplierCreateSchema = z.object({
+  name: z.string().trim().min(2).max(200),
+  phone: nullableContact,
+  email: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .email()
+    .optional()
+    .nullable()
+    .or(z.literal(""))
+    .transform((v) => v || null),
+  address: nullableContact,
+  notes: optionalText,
+});
+export const supplierUpdateSchema = supplierCreateSchema
+  .partial()
+  .refine((v) => Object.keys(v).length > 0);
+export const supplierFiltersSchema = customerFiltersSchema;
+export const supplierPaymentSchema = z.object({
+  amountCents: z.number().int().positive(),
+  paymentSource: z.enum(["cash_register", "external_cash"]),
+  note: z.string().trim().max(500).optional().nullable(),
+  idempotencyKey: idempotencyKeySchema,
+});
+export const purchaseItemSchema = z.object({
+  productId: z.number().int().positive(),
+  quantity: z.number().int().positive().max(100000),
+  purchaseUnitPriceCents: z.number().int().min(0),
+});
+export const purchaseCreateSchema = z.object({
+  supplierId: z.number().int().positive(),
+  items: z.array(purchaseItemSchema).min(1).max(200),
+  paymentMode: z.enum(["cash", "credit", "partial"]),
+  cashPaidCents: z.number().int().min(0).default(0),
+  paymentSource: z.enum(["cash_register", "external_cash"]),
+  invoiceNumber: z.string().trim().max(100).optional().nullable(),
+  invoiceDate: z.string().date().optional().nullable(),
+  note: z.string().trim().max(1000).optional().nullable(),
+  idempotencyKey: idempotencyKeySchema,
+});
+export const purchaseFiltersSchema = paginationSchema.extend({
+  search: z.string().trim().max(200).default(""),
+  supplierId: z.coerce.number().int().positive().optional(),
+  paymentMode: z.enum(["cash", "credit", "partial"]).optional(),
+  startDate: z.string().date().optional(),
+  endDate: z.string().date().optional(),
+});
+export const expenseCreateSchema = z.object({
+  category: z.string().trim().min(2).max(100),
+  description: z.string().trim().min(3).max(500),
+  amountCents: z.number().int().positive(),
+  paymentSource: z.enum(["cash_register", "external_cash"]),
+  expenseDate: z.string().date(),
+  note: z.string().trim().max(1000).optional().nullable(),
+  idempotencyKey: idempotencyKeySchema,
+});
+export const expenseCorrectionSchema = z.object({
+  reason: z.string().trim().min(3).max(500),
+  idempotencyKey: idempotencyKeySchema,
+});
+export const expenseFiltersSchema = paginationSchema.extend({
+  search: z.string().trim().max(200).default(""),
+  category: z.string().trim().max(100).optional(),
+  paymentSource: z.enum(["cash_register", "external_cash"]).optional(),
+  startDate: z.string().date().optional(),
+  endDate: z.string().date().optional(),
+});
+export const returnItemSchema = z.object({
+  saleItemId: z.number().int().positive(),
+  quantity: z.number().int().positive(),
+  restock: z.boolean(),
+  condition: z.string().trim().max(200).optional().nullable(),
+});
+export const returnCreateSchema = z.object({
+  saleId: z.number().int().positive(),
+  items: z.array(returnItemSchema).min(1).max(200),
+  reason: z.string().trim().min(3).max(1000),
+  idempotencyKey: idempotencyKeySchema,
+});
+export const returnFiltersSchema = paginationSchema.extend({
+  search: z.string().trim().max(200).default(""),
+  saleId: z.coerce.number().int().positive().optional(),
+  startDate: z.string().date().optional(),
+  endDate: z.string().date().optional(),
+});

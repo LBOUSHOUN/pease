@@ -18,8 +18,16 @@ const all = [
   "customers.view",
   "customers.credit",
   "suppliers.view",
+  "suppliers.manage",
+  "supplier_credit.view",
+  "supplier_credit.manage",
+  "purchases.view",
   "purchases.create",
+  "expenses.view",
   "expenses.create",
+  "expenses.correct",
+  "returns.view",
+  "returns.create",
   "register.open",
   "register.close",
   "register.view",
@@ -55,6 +63,10 @@ export function permissions(role: Role) {
       "customers.manage",
       "credit.view",
       "credit.manage",
+      "expenses.view",
+      "expenses.create",
+      "returns.view",
+      "returns.create",
     ];
   return [
     "dashboard.view",
@@ -67,6 +79,9 @@ export function permissions(role: Role) {
     "stock.view",
     "stock.adjust",
     "suppliers.view",
+    "purchases.view",
     "purchases.create",
+    "returns.view",
+    "returns.create",
   ];
 }

@@ -53,9 +53,13 @@ Pour produire ultérieurement les installateurs : `npm run tauri -- build`. Cett
 
 En cas de problème : vérifier WebView2, l’espace disque, les droits du dossier `%APPDATA%`, puis exécuter `npm run typecheck` et `cargo test` séparément.
 
+## Phase 4 en ligne
+
+La version web/PostgreSQL couvre maintenant les fournisseurs et leur grand livre, les achats comptant/crédit/partiels, les dépenses avec corrections immuables et les retours affectés au crédit avant les espèces. Les rapports et exports en ligne restent hors périmètre. Voir `docs/ONLINE_SUPPLIERS.md`, `docs/ONLINE_PURCHASES.md`, `docs/ONLINE_EXPENSES.md` et `docs/ONLINE_RETURNS.md`.
+
 ## Fondation en ligne
 
-Le script racine démarre d’abord l’API, attend la réussite de `http://127.0.0.1:3000/health` avec `wait-on`, puis lance Vite. Aucun délai fixe n’est utilisé. Les Phases 2 et 3 fournissent catalogue, stock, caisse, clients, crédit, POS et ventes selon les permissions du rôle.
+Le script racine démarre d’abord l’API, attend la réussite de `http://127.0.0.1:3000/health` avec `wait-on`, puis lance Vite. Aucun délai fixe n’est utilisé. Les Phases 2 à 4 fournissent catalogue, stock, caisse, clients, crédit, POS, ventes, fournisseurs, achats, dépenses et retours selon les permissions du rôle.
 
 ```powershell
 copy .env.example .env
@@ -65,4 +69,4 @@ npm run db:migrate
 npm run dev
 ```
 
-Le web répond sur `http://localhost:5173` et l’API sur `http://127.0.0.1:3000`. La configuration API est chargée depuis `apps/api/.env` (les variables d’environnement du processus restent prioritaires), y compris lorsque les migrations sont lancées depuis la racine. La version en ligne fournit onboarding, authentification, catalogue, stock, caisse, clients, journal de crédit, règlements, POS, ventes comptant/crédit/partielles et impression navigateur. Fournisseurs, achats, dépenses, retours et rapports restent à porter. Voir `docs/OFFLINE_ONLINE_BOUNDARY.md` et `docs/ONLINE_PERFORMANCE.md`.
+Le web répond sur `http://localhost:5173` et l’API sur `http://127.0.0.1:3000`. La configuration API est chargée depuis `apps/api/.env` (les variables d’environnement du processus restent prioritaires), y compris lorsque les migrations sont lancées depuis la racine. Les rapports et exports sont les prochains modules métier à porter. Voir `docs/OFFLINE_ONLINE_BOUNDARY.md` et `docs/ONLINE_PERFORMANCE.md`.

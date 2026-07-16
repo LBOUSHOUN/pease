@@ -21,6 +21,7 @@ import {
 } from "./auth.js";
 import { registerPhase2 } from "./phase2.js";
 import { registerPhase3 } from "./phase3.js";
+import { registerPhase4 } from "./phase4.js";
 export async function buildApp() {
   const app = Fastify({
     logger: { level: config.LOG_LEVEL },
@@ -235,5 +236,6 @@ export async function buildApp() {
   );
   await registerPhase2(app);
   await registerPhase3(app);
+  await registerPhase4(app);
   return app;
 }

@@ -2,7 +2,7 @@
 
 ## Version en ligne
 
-Phase 3 est fonctionnelle localement : caisse, clients, crédit, POS, ventes comptant/crédit/partielles, stock transactionnel et impression navigateur. La vérification couvre 74 tests, PostgreSQL Docker, migrations, typecheck, lint, build, concurrence et démarrage ordonné.
+Phase 4 est fonctionnelle localement : fournisseurs, achats, dépenses/corrections et retours complètent la caisse, les clients, le crédit, le POS et les ventes. La vérification couvre 96 tests, PostgreSQL Docker, migrations, typecheck, lint, build et concurrence.
 
 | Module                                | État                   | Vérification                                                                               |
 | ------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------ |
@@ -12,7 +12,7 @@ Phase 3 est fonctionnelle localement : caisse, clients, crédit, POS, ventes com
 | Sessions opaques/Argon2/cookies       | complet                | login, persistance, révocation, inactivité et rate limit testés                            |
 | Web responsive et changement forcé    | complet                | build et tests frontend réussis                                                            |
 | PWA statique                          | complet                | production uniquement; API explicitement hors cache                                        |
-| Stabilisation/performance en ligne    | complet                | 74 tests, typecheck, lint, build et tests de concurrence réussis                           |
+| Stabilisation/performance en ligne    | complet                | 96 tests, typecheck, lint, build et tests de concurrence réussis                           |
 | Catégories en ligne                   | complet                | CRUD logique, pagination, recherche, audit et protection des dépendances testés            |
 | Produits et services en ligne         | complet                | filtres, permissions, identifiants atomiques et lookup testés                              |
 | Stock en ligne                        | complet                | verrouillage, idempotence, mouvements, audit et concurrence testés                         |
@@ -21,9 +21,20 @@ Phase 3 est fonctionnelle localement : caisse, clients, crédit, POS, ventes com
 | Clients et crédit en ligne            | complet                | CRUD logique, journal immuable, règlements comptants et concurrence testés                 |
 | POS et ventes en ligne                | complet                | comptant, crédit, partiel, services, stock, reçus, numérotation et idempotence testés      |
 | Docker/Caddy                          | configuration complète | PostgreSQL de développement validé; déploiement VPS restant                                |
-| Autres modules métier en ligne        | manquants              | fournisseurs, achats, dépenses, retours et rapports restent sur desktop uniquement         |
+| Modules métier Phase 4 en ligne       | complet                | fournisseurs, achats, dépenses et retours validés                                          |
+| Rapports et exports en ligne          | manquants              | volontairement hors Phase 4                                                                |
 
 Il n’existe aucune synchronisation offline/online. Le déploiement VPS n’a pas été effectué.
+
+### Phase 4 en ligne — 16 juillet 2026
+
+| Module                  | État     | Vérification                                                              |
+| ----------------------- | -------- | ------------------------------------------------------------------------- |
+| Fournisseurs et dette   | complet  | grand livre immuable, règlements, permissions, idempotence et concurrence |
+| Achats                  | complet  | comptant/crédit/partiel, stock, prix d’achat, dette et caisse atomiques   |
+| Dépenses                | complet  | source caisse/externe et corrections immuables idempotentes               |
+| Retours                 | complet  | prix sauvegardé, crédit avant espèces, restock explicite et concurrence   |
+| Rapports et exports web | manquant | volontairement hors Phase 4                                               |
 
 ## Version desktop hors ligne
 
