@@ -115,6 +115,29 @@ const SuppliersPage = lazy(() =>
   ReturnDetails = lazy(() =>
     phase4().then((m) => ({ default: m.ReturnDetails })),
   );
+const phase5 = () => import("./Phase5"),
+  EmployeesPage = lazy(() =>
+    phase5().then((m) => ({ default: m.EmployeesPage })),
+  ),
+  EmployeeForm = lazy(() =>
+    phase5().then((m) => ({ default: m.EmployeeForm })),
+  ),
+  EmployeeDetails = lazy(() =>
+    phase5().then((m) => ({ default: m.EmployeeDetails })),
+  ),
+  PasswordReset = lazy(() =>
+    phase5().then((m) => ({ default: m.PasswordReset })),
+  ),
+  AuditPage = lazy(() => phase5().then((m) => ({ default: m.AuditPage }))),
+  ReportsHub = lazy(() => phase5().then((m) => ({ default: m.ReportsHub }))),
+  ReportPage = lazy(() => phase5().then((m) => ({ default: m.ReportPage }))),
+  SettingsPage = lazy(() =>
+    phase5().then((m) => ({ default: m.SettingsPage })),
+  ),
+  BackupsPage = lazy(() => phase5().then((m) => ({ default: m.BackupsPage }))),
+  ProductLabel = lazy(() =>
+    phase5().then((m) => ({ default: m.ProductLabel })),
+  );
 function field(f: FormData, n: string) {
   return String(f.get(n) ?? "");
 }
@@ -500,6 +523,21 @@ function Layout({
           {user.permissions.includes("returns.view") && (
             <NavLink to="/returns">Retours</NavLink>
           )}
+          {user.permissions.includes("users.view") && (
+            <NavLink to="/employees">Employés</NavLink>
+          )}
+          {user.permissions.some((p) => p.startsWith("reports.view_")) && (
+            <NavLink to="/reports">Rapports</NavLink>
+          )}
+          {user.permissions.includes("audit.view") && (
+            <NavLink to="/audit">Audit</NavLink>
+          )}
+          {user.permissions.includes("settings.view") && (
+            <NavLink to="/settings">Paramètres</NavLink>
+          )}
+          {user.permissions.includes("backups.create") && (
+            <NavLink to="/backups">Sauvegardes</NavLink>
+          )}
         </nav>
         <footer>
           {logoutError && <small role="alert">{logoutError}</small>}
@@ -520,7 +558,7 @@ function Layout({
             path="/"
             element={
               <Suspense fallback={<main className="page">Chargement…</main>}>
-                <Dashboard />
+                <Dashboard user={user} />
               </Suspense>
             }
           />
@@ -768,7 +806,7 @@ function Layout({
             path="/purchases/new"
             element={
               <Lazy>
-                <PurchaseForm />
+                <PurchaseForm user={user} />
               </Lazy>
             }
           />
@@ -841,6 +879,108 @@ function Layout({
             element={
               <Lazy>
                 <ReturnForm />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/employees"
+            element={
+              <Lazy>
+                <EmployeesPage user={user} />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/employees/new"
+            element={
+              <Lazy>
+                <EmployeeForm />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/employees/:id"
+            element={
+              <Lazy>
+                <EmployeeDetails user={user} />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/employees/:id/edit"
+            element={
+              <Lazy>
+                <EmployeeForm edit />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/employees/:id/reset-password"
+            element={
+              <Lazy>
+                <PasswordReset />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/audit"
+            element={
+              <Lazy>
+                <AuditPage />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/reports"
+            element={
+              <Lazy>
+                <ReportsHub user={user} />
+              </Lazy>
+            }
+          />
+          {(
+            [
+              "sales",
+              "profit",
+              "stock",
+              "customers",
+              "suppliers",
+              "expenses",
+              "workers",
+              "registers",
+            ] as const
+          ).map((kind) => (
+            <Route
+              key={kind}
+              path={`/reports/${kind}`}
+              element={
+                <Lazy>
+                  <ReportPage kind={kind} user={user} />
+                </Lazy>
+              }
+            />
+          ))}
+          <Route
+            path="/settings"
+            element={
+              <Lazy>
+                <SettingsPage user={user} />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/backups"
+            element={
+              <Lazy>
+                <BackupsPage user={user} />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/products/:id/label"
+            element={
+              <Lazy>
+                <ProductLabel />
               </Lazy>
             }
           />

@@ -782,6 +782,11 @@ export function ProductDetails({ user }: { user: SafeUser }) {
             Modifier
           </Link>
         )}
+        {has(user, "labels.print") && (
+          <Link className="button" to={`/products/${x.id}/label`}>
+            Étiquette
+          </Link>
+        )}
       </div>
       <dl className="details">
         <dt>Catégorie</dt>

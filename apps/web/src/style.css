@@ -358,3 +358,83 @@ footer {
     background: #fff;
   }
 }
+.camera {
+  width: min(620px, 95vw);
+}
+.camera video {
+  width: 100%;
+  max-height: 60vh;
+  background: #111;
+}
+.drawer {
+  position: fixed;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: min(460px, 95vw);
+  background: #fff;
+  padding: 24px;
+  box-shadow: -8px 0 30px #0003;
+  z-index: 20;
+  overflow: auto;
+}
+.temporary-password {
+  display: block;
+  font-size: 1.4rem;
+  padding: 16px;
+  background: #f3f4f6;
+  margin: 12px 0;
+  user-select: all;
+}
+.labels {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(40mm, 1fr));
+  gap: 4mm;
+}
+.product-label {
+  width: 40mm;
+  height: 30mm;
+  border: 1px dashed #aaa;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 1mm;
+  text-align: center;
+}
+.product-label svg {
+  max-width: 38mm;
+  height: 12mm;
+}
+.product-label img {
+  width: 12mm;
+  height: 12mm;
+}
+.size-50-30 .product-label {
+  width: 50mm;
+  height: 30mm;
+}
+@media print {
+  .labels-page .title {
+    display: none !important;
+  }
+  .labels {
+    display: grid !important;
+    gap: 0;
+  }
+  .product-label {
+    break-inside: avoid;
+    border: 0;
+  }
+  .print-sheet {
+    width: 100%;
+    max-width: none;
+  }
+  .receipt-58 {
+    width: 58mm;
+  }
+  .receipt-80 {
+    width: 80mm;
+  }
+}

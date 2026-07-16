@@ -1403,3 +1403,266 @@ describe("online suppliers, purchases, expenses and returns", () => {
     console.info("PHASE4_TIMINGS_MS", timings);
   });
 });
+
+describe("online administration, reports, exports and settings", () => {
+  it("manages an employee safely and revokes sessions after password reset", async () => {
+    const admin = await phase2Owner(),
+      created = await app.inject({
+        method: "POST",
+        url: "/api/users",
+        headers: { cookie: admin },
+        payload: {
+          displayName: "Caissier Test",
+          username: "cashier5",
+          email: "cashier5@example.com",
+          role: "cashier",
+        },
+      });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().temporaryPassword).toMatch(/[A-Z]/);
+    expect(JSON.stringify(created.json())).not.toContain("passwordHash");
+    const id = created.json().user.id,
+      login = await app.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: {
+          login: "cashier5",
+          password: created.json().temporaryPassword,
+        },
+      });
+    expect(login.statusCode).toBe(200);
+    expect(login.json().user.mustChangePassword).toBe(true);
+    const workerCookie = cookie(login),
+      blocked = await app.inject({
+        url: "/api/products",
+        headers: { cookie: workerCookie },
+      });
+    expect(blocked.statusCode).toBe(403);
+    const reset = await app.inject({
+      method: "POST",
+      url: `/api/users/${id}/reset-password`,
+      headers: { cookie: admin },
+      payload: { confirmation: true },
+    });
+    expect(reset.statusCode).toBe(200);
+    expect(
+      (
+        await app.inject({
+          url: "/api/auth/me",
+          headers: { cookie: workerCookie },
+        })
+      ).statusCode,
+    ).toBe(401);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/auth/login",
+          payload: {
+            login: "cashier5",
+            password: reset.json().temporaryPassword,
+          },
+        })
+      ).statusCode,
+    ).toBe(200);
+    const audit = await app.inject({
+      url: "/api/audit-logs?action=user.password_reset",
+      headers: { cookie: admin },
+    });
+    expect(audit.statusCode).toBe(200);
+    expect(audit.json().rows[0].metadata).not.toHaveProperty("password");
+  });
+
+  it("rejects duplicate identities and protects the final global administrator", async () => {
+    const admin = await phase2Owner(),
+      payload = {
+        displayName: "Manager",
+        username: "manager5",
+        email: "manager5@example.com",
+        role: "manager",
+      };
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/users",
+          headers: { cookie: admin },
+          payload,
+        })
+      ).statusCode,
+    ).toBe(201);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/users",
+          headers: { cookie: admin },
+          payload: {
+            ...payload,
+            displayName: "Duplicate",
+            email: "other@example.com",
+          },
+        })
+      ).statusCode,
+    ).toBe(409);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/users/1/deactivate",
+          headers: { cookie: admin },
+        })
+      ).statusCode,
+    ).toBe(409);
+  });
+
+  it("runs every bounded report and enforces profit restrictions", async () => {
+    const admin = await phase2Owner(),
+      product = await phase3Product(admin, 3),
+      customer = await phase3Customer(admin);
+    await openRegister(admin);
+    await createSale(admin, product.id, {
+      customerId: customer.id,
+      paymentMode: "partial",
+      cashPaidCents: 500,
+    });
+    for (const kind of [
+      "sales",
+      "profit",
+      "stock",
+      "customers",
+      "suppliers",
+      "expenses",
+      "workers",
+      "registers",
+    ]) {
+      const response = await app.inject({
+        url: `/api/reports/${kind}?preset=today&pageSize=10`,
+        headers: { cookie: admin },
+      });
+      expect(response.statusCode, `${kind}: ${response.body}`).toBe(200);
+      expect(response.json().pageSize).toBe(10);
+    }
+    const argon2 = (await import("argon2")).default;
+    await database.sql`insert into users(full_name,username,password_hash,role,must_change_password) values('Caissier','reportcash',${await argon2.hash("Secret123")},'cashier',false)`;
+    const login = await app.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { login: "reportcash", password: "Secret123" },
+      }),
+      restricted = cookie(login);
+    expect(
+      (
+        await app.inject({
+          url: "/api/reports/profit",
+          headers: { cookie: restricted },
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect(
+      (
+        await app.inject({
+          url: "/api/reports/sales",
+          headers: { cookie: restricted },
+        })
+      ).statusCode,
+    ).toBe(200);
+  });
+
+  it("streams spreadsheet-safe CSV with BOM, semicolons and CRLF", async () => {
+    const admin = await phase2Owner();
+    await database.sql`insert into customers(full_name,notes,created_by) values('=2+2','@unsafe',1)`;
+    const response = await app.inject({
+      url: "/api/exports/customers.csv?preset=today",
+      headers: { cookie: admin },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/csv");
+    expect(response.rawPayload[0]).toBe(0xef);
+    expect(response.body).toContain(";");
+    expect(response.body).toContain("\r\n");
+    expect(response.body).toContain("'=2+2");
+    expect(response.body).not.toContain("password_hash");
+    const [audit] =
+      await database.sql`select count(*)::int count from audit_logs where action='export.created'`;
+    expect(audit!.count).toBe(1);
+  });
+
+  it("updates safe settings without changing existing identifiers", async () => {
+    const admin = await phase2Owner(),
+      product = await phase3Product(admin);
+    const current = (
+      await app.inject({ url: "/api/settings", headers: { cookie: admin } })
+    ).json();
+    const update = await app.inject({
+      method: "PATCH",
+      url: "/api/settings",
+      headers: { cookie: admin },
+      payload: {
+        ...current,
+        barcodePrefix: "NEW",
+        timezone: "Africa/Casablanca",
+        receiptWidth: 58,
+        labelSize: "50x30",
+      },
+    });
+    expect(update.statusCode).toBe(200);
+    const [stored] =
+      await database.sql`select internal_barcode from products where id=${product.id}`;
+    expect(stored!.internal_barcode).toBe(product.internalBarcode);
+    expect(
+      (
+        await app.inject({
+          method: "PATCH",
+          url: "/api/settings",
+          headers: { cookie: admin },
+          payload: { ...current, timezone: "Not/AZone" },
+        })
+      ).statusCode,
+    ).toBe(400);
+  });
+
+  it("creates and verifies a native PostgreSQL backup and rejects unauthorized restore", async () => {
+    const admin = await phase2Owner(),
+      created = await app.inject({
+        method: "POST",
+        url: "/api/backups",
+        headers: { cookie: admin },
+      });
+    expect(created.statusCode, created.body).toBe(201);
+    expect(created.json().checksumSha256).toHaveLength(64);
+    const verified = await app.inject({
+      method: "POST",
+      url: `/api/backups/${created.json().id}/verify`,
+      headers: { cookie: admin },
+    });
+    expect(verified.statusCode, verified.body).toBe(200);
+    const argon2 = (await import("argon2")).default;
+    await database.sql`insert into users(full_name,username,password_hash,role,must_change_password) values('Manager','backupmanager',${await argon2.hash("Secret123")},'manager',false)`;
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { login: "backupmanager", password: "Secret123" },
+    });
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/api/backups/${created.json().id}/restore`,
+          headers: { cookie: cookie(login) },
+          payload: { confirmation: "RESTORE" },
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/api/backups/${created.json().id}/restore`,
+          headers: { cookie: admin },
+          payload: { confirmation: "wrong" },
+        })
+      ).statusCode,
+    ).toBe(400);
+  });
+});

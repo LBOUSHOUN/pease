@@ -19,6 +19,7 @@ import type {
 import { request } from "./api";
 import { centsToMad, madToCents } from "./money";
 import { useScanner } from "./use-scanner";
+import CameraScanner from "./CameraScanner";
 import {
   addCartProduct,
   CartLine,
@@ -866,6 +867,7 @@ export function PosPage({ user }: { user: SafeUser }) {
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [sale, setSale] = useState<SaleResult>(),
+    [camera, setCamera] = useState(false),
     nav = useNavigate(),
     search = useDebounced(query),
     cq = useDebounced(customerQuery),
@@ -967,6 +969,17 @@ export function PosPage({ user }: { user: SafeUser }) {
         <Link to="/sales">Historique</Link>
       </div>
       <ErrorBox value={error} />
+      {user.permissions.includes("scanner.camera") && (
+        <button type="button" onClick={() => setCamera(true)}>
+          Scanner avec la caméra
+        </button>
+      )}
+      {camera && (
+        <CameraScanner
+          onScan={(code) => void scan(code)}
+          close={() => setCamera(false)}
+        />
+      )}
       {sale && (
         <Notice
           value={`Vente ${sale.saleNumber} enregistrée · ${centsToMad(sale.totalCents)}`}

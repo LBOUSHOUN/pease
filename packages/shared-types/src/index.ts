@@ -392,3 +392,88 @@ export interface RefundAllocation {
   debtReductionCents: number;
   cashRefundCents: number;
 }
+export interface Employee {
+  id: number;
+  displayName: string;
+  username: string;
+  email: string | null;
+  role: Role;
+  isActive: boolean;
+  mustChangePassword: boolean;
+  lastLoginAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface EmployeeListResponse extends Pagination {
+  rows: Employee[];
+}
+export interface AuditEntry {
+  id: number;
+  action: string;
+  entityType: string;
+  entityId: number | null;
+  workerId: number | null;
+  workerName: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+}
+export interface AuditListResponse extends Pagination {
+  rows: AuditEntry[];
+}
+export interface AppSettings {
+  shopName: string;
+  phone: string | null;
+  address: string | null;
+  receiptFooter: string | null;
+  currency: "MAD";
+  timezone: string;
+  barcodePrefix: string;
+  lowStockDefault: number;
+  receiptWidth: 58 | 80;
+  showBarcodeOnReceipt: boolean;
+  showQrOnLabel: boolean;
+  showPriceOnLabel: boolean;
+  labelSize: "40x30" | "50x30" | "A4";
+  backupRetention: number;
+  sessionTimeoutMinutes: number;
+}
+export interface ReportResponse {
+  kind: string;
+  range: { start: string; end: string };
+  summary: Record<string, number>;
+  rows: Record<string, unknown>[];
+  page: number;
+  pageSize: number;
+  totalRows: number;
+  totalPages: number;
+}
+export interface DashboardReport {
+  salesTodayCents: number;
+  cashSalesTodayCents: number;
+  creditSalesTodayCents: number;
+  returnsTodayCents: number;
+  netSalesTodayCents: number;
+  estimatedProfitTodayCents: number | null;
+  customerDebtCents: number;
+  supplierDebtCents: number;
+  expensesTodayCents: number;
+  lowStockCount: number;
+  outOfStockCount: number;
+  openRegisters: number;
+  recentSales: {
+    id: number;
+    saleNumber: string;
+    totalCents: number;
+    createdAt: string;
+  }[];
+}
+export interface BackupMetadata {
+  id: number;
+  filename: string;
+  sizeBytes: number;
+  checksumSha256: string | null;
+  status: string;
+  creatorName: string;
+  verifiedAt: string | null;
+  createdAt: string;
+}

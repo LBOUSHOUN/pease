@@ -3,6 +3,13 @@ const all = [
   "dashboard.view",
   "settings.manage",
   "workers.manage",
+  "users.view",
+  "users.create",
+  "users.edit",
+  "users.activate",
+  "users.deactivate",
+  "users.reset_password",
+  "users.assign_roles",
   "products.view",
   "products.create",
   "products.edit",
@@ -37,13 +44,41 @@ const all = [
   "credit.manage",
   "reports.sales",
   "reports.profit",
+  "reports.view_sales",
+  "reports.view_profit",
+  "reports.view_stock",
+  "reports.view_customers",
+  "reports.view_suppliers",
+  "reports.view_expenses",
+  "reports.view_workers",
+  "reports.view_registers",
   "exports.manage",
+  "exports.create",
   "audit.view",
+  "settings.view",
+  "backups.create",
+  "backups.restore",
+  "scanner.camera",
+  "labels.print",
 ];
 export function permissions(role: Role) {
   if (role === "global_admin") return all;
   if (role === "manager")
-    return all.filter((x) => !["settings.manage", "audit.view"].includes(x));
+    return all.filter(
+      (x) =>
+        ![
+          "settings.manage",
+          "backups.create",
+          "backups.restore",
+          "users.create",
+          "users.edit",
+          "users.activate",
+          "users.deactivate",
+          "users.reset_password",
+          "users.assign_roles",
+          "workers.manage",
+        ].includes(x),
+    );
   if (role === "cashier")
     return [
       "dashboard.view",
@@ -67,6 +102,11 @@ export function permissions(role: Role) {
       "expenses.create",
       "returns.view",
       "returns.create",
+      "reports.view_sales",
+      "reports.view_registers",
+      "scanner.camera",
+      "labels.print",
+      "settings.view",
     ];
   return [
     "dashboard.view",
@@ -83,5 +123,10 @@ export function permissions(role: Role) {
     "purchases.create",
     "returns.view",
     "returns.create",
+    "reports.view_stock",
+    "reports.view_suppliers",
+    "scanner.camera",
+    "labels.print",
+    "settings.view",
   ];
 }

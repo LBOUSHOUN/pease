@@ -31,6 +31,7 @@ import {
   type PurchaseDraftLine,
 } from "./phase4-utils";
 import { useScanner } from "./use-scanner";
+import CameraScanner from "./CameraScanner";
 
 const allowed = (user: SafeUser, permission: string) =>
   user.permissions.includes(permission);
@@ -426,7 +427,7 @@ export function PurchasesPage() {
   );
 }
 
-export function PurchaseForm() {
+export function PurchaseForm({ user }: { user: SafeUser }) {
   const navigate = useNavigate(),
     [supplierSearch, setSupplierSearch] = useState(""),
     [suppliers, setSuppliers] = useState<Supplier[]>([]),
@@ -439,6 +440,7 @@ export function PurchaseForm() {
     [source, setSource] = useState("external_cash"),
     [register, setRegister] = useState<RegisterStatus>(),
     [error, setError] = useState(""),
+    [camera, setCamera] = useState(false),
     busy = useRef(false);
   const sq = useDebounced(supplierSearch),
     pq = useDebounced(productSearch),
@@ -528,6 +530,23 @@ export function PurchaseForm() {
     <main className="page">
       <h1>Nouvel achat</h1>
       <ErrorBox value={error} />
+      {user.permissions.includes("scanner.camera") && (
+        <button type="button" onClick={() => setCamera(true)}>
+          Scanner avec la caméra
+        </button>
+      )}
+      {camera && (
+        <CameraScanner
+          close={() => setCamera(false)}
+          onScan={(code) =>
+            request<{ product: ProductListRow }>(
+              `/products/lookup?code=${encodeURIComponent(code)}`,
+            ).then((r) => {
+              if (r.product.productType === "physical_product") add(r.product);
+            })
+          }
+        />
+      )}
       {needsRegister && !register?.sessionId && (
         <div className="error">
           Ouvrez une caisse pour payer depuis la caisse.

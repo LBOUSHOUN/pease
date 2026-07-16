@@ -364,3 +364,83 @@ export const returnFiltersSchema = paginationSchema.extend({
   startDate: z.string().date().optional(),
   endDate: z.string().date().optional(),
 });
+
+const roleSchema = z.enum([
+  "global_admin",
+  "manager",
+  "cashier",
+  "stock_worker",
+]);
+export const userFiltersSchema = paginationSchema.extend({
+  search: z.string().trim().max(100).default(""),
+  role: roleSchema.optional(),
+  status: z.enum(["all", "active", "inactive"]).default("all"),
+});
+export const userCreateSchema = z.object({
+  displayName: z.string().trim().min(2).max(100),
+  username: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .regex(/^[a-z0-9._-]{3,50}$/),
+  email: z.string().trim().toLowerCase().email().max(200).nullable().optional(),
+  role: roleSchema,
+});
+export const userUpdateSchema = userCreateSchema.partial();
+export const passwordResetSchema = z.object({ confirmation: z.literal(true) });
+export const forcePasswordChangeSchema = z.object({ required: z.boolean() });
+export const auditFiltersSchema = paginationSchema.extend({
+  userId: z.coerce.number().int().positive().optional(),
+  action: z.string().trim().max(100).default(""),
+  entityType: z.string().trim().max(100).default(""),
+  entityId: z.coerce.number().int().positive().optional(),
+  startDate: z.string().date().optional(),
+  endDate: z.string().date().optional(),
+  search: z.string().trim().max(100).default(""),
+});
+export const reportFiltersSchema = paginationSchema.extend({
+  preset: z
+    .enum([
+      "today",
+      "yesterday",
+      "this_week",
+      "this_month",
+      "last_month",
+      "custom",
+    ])
+    .default("today"),
+  startDate: z.string().date().optional(),
+  endDate: z.string().date().optional(),
+  search: z.string().trim().max(100).default(""),
+  paymentMode: z.enum(["cash", "credit", "partial"]).optional(),
+  userId: z.coerce.number().int().positive().optional(),
+  customerId: z.coerce.number().int().positive().optional(),
+  categoryId: z.coerce.number().int().positive().optional(),
+  status: z.enum(["all", "active", "inactive", "low", "out"]).default("all"),
+  category: z.string().trim().max(100).optional(),
+  paymentSource: z.enum(["cash_register", "external_cash"]).optional(),
+});
+export const settingsUpdateSchema = z.object({
+  shopName: z.string().trim().min(1).max(120),
+  phone: z.string().trim().max(40).nullable(),
+  address: z.string().trim().max(300).nullable(),
+  receiptFooter: z.string().trim().max(300).nullable(),
+  currency: z.literal("MAD"),
+  timezone: z.string().trim().min(1).max(80),
+  barcodePrefix: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z0-9]{2,10}$/),
+  lowStockDefault: z.number().int().min(0).max(100000),
+  receiptWidth: z.union([z.literal(58), z.literal(80)]),
+  showBarcodeOnReceipt: z.boolean(),
+  showQrOnLabel: z.boolean(),
+  showPriceOnLabel: z.boolean(),
+  labelSize: z.enum(["40x30", "50x30", "A4"]),
+  backupRetention: z.number().int().min(1).max(365),
+  sessionTimeoutMinutes: z.number().int().min(15).max(10080),
+});
+export const backupRestoreSchema = z.object({
+  confirmation: z.literal("RESTORE"),
+});

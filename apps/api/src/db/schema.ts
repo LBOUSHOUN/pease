@@ -35,6 +35,17 @@ export const appSettings = pgTable("app_settings", {
     .default(1),
   lowStockDefault: integer("low_stock_default").notNull().default(5),
   receiptWidth: integer("receipt_width").notNull().default(80),
+  timezone: text().notNull().default("Africa/Casablanca"),
+  showBarcodeOnReceipt: boolean("show_barcode_on_receipt")
+    .notNull()
+    .default(true),
+  showQrOnLabel: boolean("show_qr_on_label").notNull().default(true),
+  showPriceOnLabel: boolean("show_price_on_label").notNull().default(true),
+  labelSize: text("label_size").notNull().default("40x30"),
+  backupRetention: integer("backup_retention").notNull().default(7),
+  sessionTimeoutMinutes: integer("session_timeout_minutes")
+    .notNull()
+    .default(720),
   createdAt: ts("created_at"),
   updatedAt: ts("updated_at"),
 });
@@ -63,6 +74,7 @@ export const users = pgTable(
       .on(sql`lower(${t.email})`)
       .where(sql`${t.email} is not null`),
     index("users_active_idx").on(t.isActive),
+    index("users_name_idx").on(t.fullName),
     check(
       "users_role_ck",
       sql`${t.role} in ('global_admin','manager','cashier','stock_worker')`,
@@ -593,7 +605,35 @@ export const auditLogs = pgTable(
     newValuesJson: text("new_values_json"),
     createdAt: ts("created_at"),
   },
-  (t) => [index("audit_date_idx").on(t.createdAt)],
+  (t) => [
+    index("audit_date_idx").on(t.createdAt),
+    index("audit_user_date_idx").on(t.userId, t.createdAt),
+    index("audit_action_date_idx").on(t.action, t.createdAt),
+    index("audit_entity_idx").on(t.entityType, t.entityId, t.createdAt),
+  ],
+);
+export const backups = pgTable(
+  "backups",
+  {
+    id: serial().primaryKey(),
+    filename: text().notNull().unique(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull().default(0),
+    checksumSha256: text("checksum_sha256"),
+    status: text().notNull().default("creating"),
+    createdBy: integer("created_by")
+      .notNull()
+      .references(() => users.id),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    createdAt: ts("created_at"),
+  },
+  (t) => [
+    index("backups_created_idx").on(t.createdAt),
+    check(
+      "backups_status_ck",
+      sql`${t.status} in ('creating','ready','verified','failed','restoring')`,
+    ),
+    check("backups_size_ck", sql`${t.sizeBytes}>=0`),
+  ],
 );
 export const cashMovements = pgTable(
   "cash_movements",
