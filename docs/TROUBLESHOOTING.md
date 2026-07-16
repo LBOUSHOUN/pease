@@ -1,5 +1,10 @@
 # Dépannage
 
+- Vite affiche `ECONNREFUSED` au démarrage : vérifier que le script racine attend `wait-on http-get://127.0.0.1:3000/health` et qu’aucun ancien processus n’occupe le port 3000.
+- Code-barres non détecté : configurer le scanner USB en clavier avec Entrée comme suffixe. La capture globale ignore les champs éditables; utiliser le champ scanner dédié pendant une saisie manuelle.
+- Ajustement refusé : seuls les produits physiques avec suivi du stock sont acceptés. Le motif est obligatoire et le stock résultant ne peut jamais être négatif.
+- Catégorie impossible à désactiver : désactiver ou déplacer d’abord tous ses produits actifs.
+
 - Fenêtre vide : installer/réparer Microsoft WebView2.
 - Base inaccessible : vérifier les droits dans `%APPDATA%\com.maktaba.pos`.
 - Compilation Rust `os error 112` : libérer plusieurs Go sur le disque puis exécuter `cargo clean` dans `src-tauri`.

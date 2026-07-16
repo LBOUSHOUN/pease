@@ -2,6 +2,8 @@
 
 ## Version en ligne
 
+Phase 2 est fonctionnelle localement : catégories, produits/services, lookup des identifiants, stock transactionnel, mouvements et scanner USB. La vérification couvre 47 tests, PostgreSQL Docker, migration, typecheck, lint, build, démarrage ordonné et profil navigateur.
+
 | Module | État | Vérification |
 |---|---|---|
 | Workspace npm séparé | complet | typecheck/build réussis |
@@ -10,9 +12,13 @@
 | Sessions opaques/Argon2/cookies | complet | login, persistance, révocation, inactivité et rate limit testés |
 | Web responsive et changement forcé | complet | build et tests frontend réussis |
 | PWA statique | complet | production uniquement; API explicitement hors cache |
-| Stabilisation/performance en ligne | complet | 23 tests, typecheck, lint, build et profil navigateur réussis |
+| Stabilisation/performance en ligne | complet | 47 tests, typecheck, lint, build et profil navigateur réussis |
+| Catégories en ligne | complet | CRUD logique, pagination, recherche, audit et protection des dépendances testés |
+| Produits et services en ligne | complet | filtres, permissions, identifiants atomiques et lookup testés |
+| Stock en ligne | complet | verrouillage, idempotence, mouvements, audit et concurrence testés |
+| Scanner USB web | complet | buffer clavier, champ dédié et anti-doublon testés; caméra exclue |
 | Docker/Caddy | configuration complète | PostgreSQL de développement validé; déploiement VPS restant |
-| Modules métier en ligne | manquants | restent sur desktop uniquement |
+| Autres modules métier en ligne | manquants | POS, ventes, tiers, achats, dépenses, retours et rapports restent sur desktop uniquement |
 
 Il n’existe aucune synchronisation offline/online. Le déploiement VPS n’a pas été effectué.
 

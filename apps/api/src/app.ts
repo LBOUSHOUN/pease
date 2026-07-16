@@ -19,6 +19,7 @@ import {
   safeUser,
   requirePermission,
 } from "./auth.js";
+import { registerPhase2 } from "./phase2.js";
 export async function buildApp() {
   const app = Fastify({
     logger: { level: config.LOG_LEVEL },
@@ -231,5 +232,6 @@ export async function buildApp() {
     { preHandler: requirePermission("dashboard.view") },
     async () => ({ online: true, message: "API connectée" }),
   );
+  await registerPhase2(app);
   return app;
 }

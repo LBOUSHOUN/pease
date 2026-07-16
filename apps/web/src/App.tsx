@@ -19,6 +19,15 @@ import { request, AuthResponse, ApiFailure } from "./api";
 import { initializeAuth, resetAuthInitialization } from "./auth-bootstrap";
 import { singleFlight } from "./single-flight";
 const Dashboard = lazy(() => import("./Dashboard"));
+const phase2 = () => import("./Phase2");
+const CategoriesPage = lazy(() => phase2().then((m) => ({ default: m.CategoriesPage })));
+const CategoryForm = lazy(() => phase2().then((m) => ({ default: m.CategoryForm })));
+const ProductsPage = lazy(() => phase2().then((m) => ({ default: m.ProductsPage })));
+const ProductForm = lazy(() => phase2().then((m) => ({ default: m.ProductForm })));
+const ProductDetails = lazy(() => phase2().then((m) => ({ default: m.ProductDetails })));
+const StockPage = lazy(() => phase2().then((m) => ({ default: m.StockPage })));
+const StockAdjust = lazy(() => phase2().then((m) => ({ default: m.StockAdjust })));
+const StockMovements = lazy(() => phase2().then((m) => ({ default: m.StockMovements })));
 function field(f: FormData, n: string) {
   return String(f.get(n) ?? "");
 }
@@ -371,6 +380,9 @@ function Layout({
         </div>
         <nav>
           <NavLink to="/">Tableau de bord</NavLink>
+          {user.permissions.includes("products.view") && <NavLink to="/products">Produits</NavLink>}
+          {user.permissions.includes("categories.view") && <NavLink to="/categories">Catégories</NavLink>}
+          {user.permissions.includes("stock.view") && <NavLink to="/stock">Stock</NavLink>}
         </nav>
         <footer>
           {logoutError && <small role="alert">{logoutError}</small>}
@@ -395,6 +407,16 @@ function Layout({
               </Suspense>
             }
           />
+          <Route path="/categories" element={<Lazy><CategoriesPage user={user}/></Lazy>} />
+          <Route path="/categories/new" element={<Lazy><CategoryForm/></Lazy>} />
+          <Route path="/categories/:id/edit" element={<Lazy><CategoryForm edit/></Lazy>} />
+          <Route path="/products" element={<Lazy><ProductsPage user={user}/></Lazy>} />
+          <Route path="/products/new" element={<Lazy><ProductForm/></Lazy>} />
+          <Route path="/products/:id" element={<Lazy><ProductDetails user={user}/></Lazy>} />
+          <Route path="/products/:id/edit" element={<Lazy><ProductForm edit/></Lazy>} />
+          <Route path="/stock" element={<Lazy><StockPage user={user}/></Lazy>} />
+          <Route path="/stock/adjust" element={<Lazy><StockAdjust/></Lazy>} />
+          <Route path="/stock/movements" element={<Lazy><StockMovements/></Lazy>} />
           <Route path="/forbidden" element={<State title="Accès interdit" />} />
           <Route path="*" element={<State title="Page introuvable" />} />
         </Routes>
@@ -402,6 +424,7 @@ function Layout({
     </div>
   );
 }
+function Lazy({children}:{children:React.ReactNode}){return <Suspense fallback={<main className="page">Chargement…</main>}>{children}</Suspense>}
 function Offline({ retry }: { retry: () => void }) {
   return (
     <State title="Connexion indisponible">

@@ -55,6 +55,8 @@ En cas de problème : vérifier WebView2, l’espace disque, les droits du dossi
 
 ## Fondation en ligne
 
+Le script racine démarre d’abord l’API, attend la réussite de `http://127.0.0.1:3000/health` avec `wait-on`, puis lance Vite. Aucun délai fixe n’est utilisé. La Phase 2 fournit les catégories, produits, services, identifiants internes et ajustements de stock selon les permissions du rôle.
+
 ```powershell
 copy .env.example .env
 npm install
@@ -63,4 +65,4 @@ npm run db:migrate
 npm run dev
 ```
 
-Le web répond sur `http://localhost:5173` et l’API sur `http://127.0.0.1:3000`. La configuration API est chargée depuis `apps/api/.env` (les variables d’environnement du processus restent prioritaires), y compris lorsque les migrations sont lancées depuis la racine. Cette phase fournit onboarding, authentification, session opaque et tableau de bord protégé. Les modules métier en ligne ne sont pas encore portés. Voir `docs/OFFLINE_ONLINE_BOUNDARY.md` et `docs/ONLINE_PERFORMANCE.md`.
+Le web répond sur `http://localhost:5173` et l’API sur `http://127.0.0.1:3000`. La configuration API est chargée depuis `apps/api/.env` (les variables d’environnement du processus restent prioritaires), y compris lorsque les migrations sont lancées depuis la racine. La version en ligne fournit onboarding, authentification, session opaque, tableau de bord protégé et la Phase 2 métier : catégories, produits/services, identifiants, stock et mouvements. POS, ventes, tiers, achats, dépenses, retours et rapports restent à porter. Voir `docs/OFFLINE_ONLINE_BOUNDARY.md` et `docs/ONLINE_PERFORMANCE.md`.

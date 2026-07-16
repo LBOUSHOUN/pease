@@ -15,6 +15,13 @@
       "when": 1784202567973,
       "tag": "0001_omniscient_medusa",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784204152696,
+      "tag": "0002_sleepy_penance",
+      "breakpoints": true
     }
   ]
 }

@@ -81,7 +81,7 @@ export const sessions = pgTable(
 );
 export const categories = pgTable("categories", {
   id: serial().primaryKey(),
-  name: text().notNull().unique(),
+  name: text().notNull(),
   description: text(),
   isActive: boolean("is_active").notNull().default(true),
   createdBy: integer("created_by")
@@ -89,7 +89,7 @@ export const categories = pgTable("categories", {
     .references(() => users.id),
   createdAt: ts("created_at"),
   updatedAt: ts("updated_at"),
-});
+},(t)=>[uniqueIndex("categories_name_normalized_uq").on(sql`lower(trim(${t.name}))`),index("categories_active_idx").on(t.isActive)]);
 export const products = pgTable(
   "products",
   {
@@ -128,11 +128,20 @@ export const products = pgTable(
   },
   (t) => [
     index("products_name_idx").on(t.name),
+    index("products_category_idx").on(t.categoryId),
+    index("products_active_type_idx").on(t.isActive,t.productType),
+    index("products_sku_idx").on(t.sku),
+    index("products_manufacturer_barcode_idx").on(t.manufacturerBarcode),
+    index("products_internal_barcode_idx").on(t.internalBarcode),
+    index("products_qr_identifier_idx").on(t.qrIdentifier),
     check("product_stock_ck", sql`${t.currentStock}>=0`),
     check(
       "product_prices_ck",
       sql`${t.purchasePriceCents}>=0 and ${t.sellingPriceCents}>=0`,
     ),
+    check("product_other_values_ck",sql`${t.wholesalePriceCents}>=0 and ${t.wholesaleMinQuantity}>=0 and ${t.minimumStock}>=0`),
+    check("product_type_ck",sql`${t.productType} in ('physical_product','service')`),
+    check("service_stock_ck",sql`${t.productType}<>'service' or (${t.trackStock}=false and ${t.currentStock}=0)`),
   ],
 );
 export const productPriceHistory = pgTable("product_price_history", {
@@ -275,11 +284,12 @@ export const stockMovements = pgTable("stock_movements", {
   referenceType: text("reference_type"),
   referenceId: integer("reference_id"),
   reason: text().notNull(),
+  idempotencyKey: text("idempotency_key"),
   createdBy: integer("created_by")
     .notNull()
     .references(() => users.id),
   createdAt: ts("created_at"),
-});
+},(t)=>[index("stock_movements_product_date_idx").on(t.productId,t.createdAt),index("stock_movements_worker_date_idx").on(t.createdBy,t.createdAt),index("stock_movements_type_date_idx").on(t.movementType,t.createdAt),uniqueIndex("stock_movements_idempotency_uq").on(t.idempotencyKey).where(sql`${t.idempotencyKey} is not null`)]);
 export const purchases = pgTable("purchases", {
   id: serial().primaryKey(),
   purchaseNumber: text("purchase_number").notNull().unique(),

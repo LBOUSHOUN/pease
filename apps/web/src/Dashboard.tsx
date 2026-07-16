@@ -30,10 +30,7 @@ export default function Dashboard() {
   return (
     <main className="page">
       <h1>Tableau de bord</h1>
-      <p>
-        Fondation de la version en ligne. Aucun module métier n’est encore
-        activé.
-      </p>
+      <p>Catalogue, services et stock sont disponibles depuis la navigation.</p>
       {error ? (
         <div className="error">{error}</div>
       ) : (

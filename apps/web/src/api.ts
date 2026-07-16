@@ -16,6 +16,7 @@ const messages: Record<number, string> = {
   400: "Vérifiez les informations saisies.",
   401: "Votre session a expiré. Veuillez vous reconnecter.",
   403: "Vous n’avez pas l’autorisation d’effectuer cette action.",
+  404: "Ressource introuvable.",
   409: "Cette opération existe déjà ou entre en conflit avec les données actuelles.",
   429: "Trop de tentatives. Réessayez dans quelques minutes.",
   500: "Une erreur interne est survenue. Réessayez plus tard.",
@@ -29,12 +30,21 @@ function normalizedError(
   const candidate =
     body && typeof body === "object" ? (body as Partial<ApiError>) : {};
   const loginFailure = status === 401 && candidate.code === "BAD_CREDENTIALS";
+  const safeServerMessage =
+    typeof candidate.message === "string" &&
+    ["NOT_FOUND", "CONFLICT", "INACTIVE_USER", "PASSWORD_CHANGE_REQUIRED"].includes(
+      candidate.code ?? "",
+    )
+      ? candidate.message
+      : undefined;
   return {
     code:
       typeof candidate.code === "string" ? candidate.code : `HTTP_${status}`,
-    message: loginFailure
-      ? "Identifiant ou mot de passe incorrect."
-      : (messages[status] ?? messages[500]!),
+    message:
+      safeServerMessage ??
+      (loginFailure
+        ? "Identifiant ou mot de passe incorrect."
+        : (messages[status] ?? messages[500]!)),
     fieldErrors: candidate.fieldErrors,
     requestId: candidate.requestId ?? requestId,
   };
