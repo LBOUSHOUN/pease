@@ -1,7 +1,7 @@
 use super::{current, db_err, text, Database, Session};
 use rusqlite::params;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::State;
 
 #[derive(Deserialize)]
@@ -39,6 +39,12 @@ pub struct ExpenseInput {
     pub amount_cents: i64,
     pub expense_date: String,
     pub notes: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DenominationInput {
+    pub denomination_cents: i64,
+    pub quantity: i64,
 }
 
 #[tauri::command]
@@ -242,6 +248,72 @@ pub fn create_expense(
     Ok(id)
 }
 #[tauri::command]
+pub fn list_expenses(
+    search: Option<String>,
+    category: Option<String>,
+    date_from: Option<String>,
+    date_to: Option<String>,
+    page: Option<i64>,
+    db: State<Database>,
+    session: State<Session>,
+) -> Result<Value, String> {
+    current(&session, "expenses.view")?;
+    let c = db.connect()?;
+    let term = format!("%{}%", search.unwrap_or_default());
+    let mut q=c.prepare("SELECT e.id,e.category,e.description,e.amount_cents,e.expense_date,e.status,e.cash_register_session_id,u.full_name,coalesce(e.notes,''),e.correction_of_id FROM expenses e JOIN users u ON u.id=e.created_by WHERE e.description LIKE ?1 AND (?2 IS NULL OR e.category=?2) AND (?3 IS NULL OR e.expense_date>=?3) AND (?4 IS NULL OR e.expense_date<=?4) ORDER BY e.expense_date DESC,e.id DESC LIMIT 30 OFFSET ?5").map_err(db_err)?;
+    let rows=q.query_map(params![term,category,date_from,date_to,(page.unwrap_or(1).max(1)-1)*30],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"category":r.get::<_,String>(1)?,"description":r.get::<_,String>(2)?,"amountCents":r.get::<_,i64>(3)?,"expenseDate":r.get::<_,String>(4)?,"status":r.get::<_,String>(5)?,"registerId":r.get::<_,i64>(6)?,"worker":r.get::<_,String>(7)?,"notes":r.get::<_,String>(8)?,"correctionOfId":r.get::<_,Option<i64>>(9)?}))).map_err(db_err)?.collect::<Result<Vec<_>,_>>().map_err(db_err)?;
+    Ok(json!(rows))
+}
+#[tauri::command]
+pub fn correct_expense(
+    expense_id: i64,
+    reason: String,
+    db: State<Database>,
+    session: State<Session>,
+) -> Result<i64, String> {
+    let u = current(&session, "expenses.correct")?;
+    if reason.trim().is_empty() {
+        return Err("Le motif de correction est obligatoire".into());
+    }
+    let _g = db.guard()?;
+    let mut c = db.connect()?;
+    let tx = c.transaction().map_err(db_err)?;
+    let (category,description,amount,reg,date):(String,String,i64,i64,String)=tx.query_row("SELECT category,description,amount_cents,cash_register_session_id,expense_date FROM expenses WHERE id=?1 AND status='active' AND correction_of_id IS NULL",[expense_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(|_|"Cette dépense est introuvable ou déjà corrigée".to_string())?;
+    tx.execute(
+        "UPDATE expenses SET status='reversed',updated_at=CURRENT_TIMESTAMP WHERE id=?1",
+        [expense_id],
+    )
+    .map_err(db_err)?;
+    tx.execute("INSERT INTO expenses(category,description,amount_cents,cash_register_session_id,expense_date,status,correction_of_id,notes,created_by)VALUES(?1,?2,?3,?4,?5,'correction',?6,?7,?8)",params![category,format!("Annulation: {description}"),-amount,reg,date,expense_id,reason.trim(),u.id]).map_err(db_err)?;
+    let id = tx.last_insert_rowid();
+    tx.execute("INSERT INTO cash_movements(cash_register_session_id,movement_type,amount_cents,reference_type,reference_id,reason,created_by)VALUES(?1,'cash_in',?2,'expense_correction',?3,?4,?5)",params![reg,amount,id,reason.trim(),u.id]).map_err(db_err)?;
+    tx.execute("INSERT INTO audit_logs(user_id,action,entity_type,entity_id,old_values_json,new_values_json)VALUES(?1,'expense.corrected','expense',?2,?3,?4)",params![u.id,expense_id,json!({"status":"active","amountCents":amount}).to_string(),json!({"status":"reversed","correctionId":id,"reason":reason}).to_string()]).map_err(db_err)?;
+    tx.commit().map_err(db_err)?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn calculate_denominations(lines: Vec<DenominationInput>) -> Result<i64, String> {
+    denomination_total(&lines)
+}
+fn denomination_total(lines: &[DenominationInput]) -> Result<i64, String> {
+    let allowed = [20000, 10000, 5000, 2000, 1000, 500, 200, 100, 50];
+    let mut total = 0i64;
+    for x in lines {
+        if !allowed.contains(&x.denomination_cents) || x.quantity < 0 {
+            return Err("Comptage de caisse invalide".into());
+        }
+        total = total
+            .checked_add(
+                x.denomination_cents
+                    .checked_mul(x.quantity)
+                    .ok_or("Montant trop élevé")?,
+            )
+            .ok_or("Montant trop élevé")?;
+    }
+    Ok(total)
+}
+#[tauri::command]
 pub fn calculate_return_split(
     value: i64,
     remaining_credit: i64,
@@ -270,5 +342,22 @@ mod tests {
     #[test]
     fn over_return_rejected() {
         assert!(calculate_return_split(50001, 30000, 20000).is_err())
+    }
+    #[test]
+    fn denominations_use_integer_centimes() {
+        assert_eq!(
+            denomination_total(&[
+                DenominationInput {
+                    denomination_cents: 20000,
+                    quantity: 2
+                },
+                DenominationInput {
+                    denomination_cents: 50,
+                    quantity: 3
+                }
+            ])
+            .unwrap(),
+            40150
+        );
     }
 }

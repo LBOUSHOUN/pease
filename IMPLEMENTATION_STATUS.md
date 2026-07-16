@@ -15,13 +15,13 @@
 | Scanner USB | complet | test unitaire anti-doublon |
 | Scanner caméra | manquant | non testé |
 | Étiquettes | manquant | non testé |
-| Caisse ouverture/clôture | complet (sans compteur de coupures) | test manuel restant |
+| Caisse ouverture/clôture | migration des coupures et calcul Rust ajoutés; persistance/UI à finaliser | calcul testé |
 | POS comptant/crédit/partiel | complet | tests d’intégration Rust à étendre |
 | Reçu | partiel (impression WebView, gabarit détaillé manquant) | build testé |
 | Clients et règlements | complet pour création/liste/règlement | test manuel restant |
 | Fournisseurs | complet pour création/liste/règlement comptant | compilation testée, intégration à étendre |
 | Achats multi-lignes | complet pour création transactionnelle | compilation testée, intégration à étendre |
-| Dépenses | création transactionnelle complète, liste/correction manquantes | compilation testée |
+| Dépenses | création, liste filtrée et correction transactionnelle côté Rust; UI de correction à finaliser | compilation testée |
 | Retours | calcul crédit-avant-espèces testé, transaction et écran manquants | 2 tests Rust |
 | Employés | permissions et schéma uniquement | non testé |
 | Rapports détaillés/exports CSV | manquant | non testé |

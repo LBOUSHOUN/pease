@@ -74,6 +74,23 @@ impl Database {
             tx.commit()
                 .map_err(|_| "Migration impossible".to_string())?;
         }
+        let v2: Option<i64> = c
+            .query_row(
+                "SELECT version FROM schema_migrations WHERE version=2",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|_| "Migration impossible".to_string())?;
+        if v2.is_none() {
+            let tx = c
+                .unchecked_transaction()
+                .map_err(|_| "Migration impossible".to_string())?;
+            tx.execute_batch("CREATE TABLE cash_register_denominations(id INTEGER PRIMARY KEY,cash_register_session_id INTEGER NOT NULL REFERENCES cash_register_sessions(id),denomination_cents INTEGER NOT NULL CHECK(denomination_cents>0),quantity INTEGER NOT NULL CHECK(quantity>=0),total_cents INTEGER NOT NULL CHECK(total_cents>=0),UNIQUE(cash_register_session_id,denomination_cents)); CREATE INDEX idx_expense_date ON expenses(expense_date); CREATE INDEX idx_returns_sale ON returns(original_sale_id);").map_err(|_|"Migration 2 impossible".to_string())?;
+            tx.execute("INSERT INTO schema_migrations(version,name)VALUES(2,'denominations_and_financial_indexes')",[]).map_err(|_|"Migration impossible".to_string())?;
+            tx.commit()
+                .map_err(|_| "Migration impossible".to_string())?;
+        }
         Ok(())
     }
     pub fn validate_file(path: &Path) -> Result<(), String> {

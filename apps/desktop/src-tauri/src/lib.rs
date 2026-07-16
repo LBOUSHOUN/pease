@@ -882,7 +882,10 @@ pub fn run() {
             operations::supplier_payment,
             operations::create_purchase,
             operations::create_expense,
-            operations::calculate_return_split
+            operations::list_expenses,
+            operations::correct_expense,
+            operations::calculate_return_split,
+            operations::calculate_denominations
         ])
         .run(tauri::generate_context!())
         .expect("error while running Maktaba POS")
