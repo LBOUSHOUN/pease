@@ -13,10 +13,11 @@ import {
   Route,
   Routes,
   useLocation,
+  useParams,
 } from "react-router-dom";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { api, User } from "./api";
-import { CartLine, cartTotal, money, ScannerBuffer, toCents } from "./lib";
+import { CartLine, cartTotal, denominationTotal, money, ScannerBuffer, toCents } from "./lib";
 import "./App.css";
 type Bootstrap = {
   needsOnboarding: boolean;
@@ -389,7 +390,15 @@ function Shell({
               path="/expenses"
               element={
                 <Allowed u={user} p="expenses.view">
-                  <Expenses />
+                  <ExpenseManager />
+                </Allowed>
+              }
+            />
+            <Route
+              path="/sales/:id/return"
+              element={
+                <Allowed u={user} p="sales.return">
+                  <ReturnSale />
                 </Allowed>
               }
             />
@@ -397,7 +406,7 @@ function Shell({
               path="/register"
               element={
                 <Allowed u={user} p="register.open">
-                  <Register />
+                  <RegisterWithDenominations />
                 </Allowed>
               }
             />
@@ -1630,6 +1639,507 @@ function Settings() {
     </Page>
   );
 }
+type ExpenseRow = {
+  id: number;
+  category: string;
+  description: string;
+  amountCents: number;
+  expenseDate: string;
+  status: string;
+  registerId: number;
+  worker: string;
+  notes: string;
+  correctionOfId: number | null;
+};
+function ExpenseManager() {
+  const [items, setItems] = useState<ExpenseRow[]>([]),
+    [search, setSearch] = useState(""),
+    [category, setCategory] = useState(""),
+    [page, setPage] = useState(1),
+    [correct, setCorrect] = useState<ExpenseRow | null>(null),
+    a = useAsync();
+  const load = useCallback(
+    () =>
+      a
+        .run(() =>
+          api.call<ExpenseRow[]>("list_expenses", {
+            search: search || null,
+            category: category || null,
+            dateFrom: null,
+            dateTo: null,
+            page,
+          }),
+        )
+        .then((x) => x && setItems(x)),
+    [a, search, category, page],
+  );
+  useEffect(() => {
+    void load();
+  }, [load]);
+  return (
+    <Page
+      title="Dépenses"
+      sub="Historique financier conservé et corrections auditables"
+    >
+      <ErrorBox message={a.error} />
+      <div className="toolbar">
+        <input
+          placeholder="Rechercher une description…"
+          value={search}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPage(1);
+          }}
+        />
+        <select value={category} onChange={(e) => setCategory(e.target.value)}>
+          <option value="">Toutes catégories</option>
+          {[
+            "Loyer",
+            "Électricité",
+            "Eau",
+            "Internet",
+            "Salaires",
+            "Transport",
+            "Maintenance",
+            "Fournitures du magasin",
+            "Autre",
+          ].map((x) => (
+            <option key={x}>{x}</option>
+          ))}
+        </select>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Dépense</th>
+              <th>Employé</th>
+              <th>Caisse</th>
+              <th>Montant</th>
+              <th>Statut</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((x) => (
+              <tr key={x.id}>
+                <td>{x.expenseDate}</td>
+                <td>
+                  <b>{x.description}</b>
+                  <small>{x.category}</small>
+                </td>
+                <td>{x.worker}</td>
+                <td>#{x.registerId}</td>
+                <td>{money(x.amountCents)}</td>
+                <td>
+                  <span
+                    className={x.status === "active" ? "pill" : "pill danger"}
+                  >
+                    {x.status === "active"
+                      ? "Active"
+                      : x.status === "reversed"
+                        ? "Annulée"
+                        : "Correction"}
+                  </span>
+                </td>
+                <td>
+                  {x.status === "active" && (
+                    <button className="link" onClick={() => setCorrect(x)}>
+                      Corriger
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!items.length && <Empty text="Aucune dépense" />}
+      </div>
+      <div className="actions">
+        <button
+          className="secondary"
+          disabled={page === 1}
+          onClick={() => setPage((p) => p - 1)}
+        >
+          Précédent
+        </button>
+        <span>Page {page}</span>
+        <button
+          className="secondary"
+          disabled={items.length < 30}
+          onClick={() => setPage((p) => p + 1)}
+        >
+          Suivant
+        </button>
+      </div>
+      {correct && (
+        <ExpenseCorrection
+          value={correct}
+          close={() => setCorrect(null)}
+          done={() => {
+            setCorrect(null);
+            void load();
+          }}
+        />
+      )}
+    </Page>
+  );
+}
+function ExpenseCorrection({
+  value,
+  close,
+  done,
+}: {
+  value: ExpenseRow;
+  close: () => void;
+  done: () => void;
+}) {
+  const [reason, setReason] = useState(""),
+    [sent, setSent] = useState(false),
+    a = useAsync();
+  const submit = () => {
+    if (!reason.trim() || sent) return;
+    setSent(true);
+    void a
+      .run(() => api.call("correct_expense", { expenseId: value.id, reason }))
+      .then((x) => {
+        if (x !== undefined) done();
+        else setSent(false);
+      });
+  };
+  return (
+    <Modal title="Corriger la dépense" close={close}>
+      <p>
+        <b>{value.description}</b>
+        <br />
+        {money(value.amountCents)} · {value.expenseDate}
+      </p>
+      <p>L’original sera conservé et une écriture compensatoire sera créée.</p>
+      <ErrorBox message={a.error} />
+      <label>
+        <span>Motif obligatoire</span>
+        <textarea value={reason} onChange={(e) => setReason(e.target.value)} />
+      </label>
+      <div className="actions">
+        <button className="secondary" onClick={close}>
+          Annuler
+        </button>
+        <button disabled={!reason.trim() || sent} onClick={submit}>
+          Confirmer la correction
+        </button>
+      </div>
+    </Modal>
+  );
+}
+const madDenominations = [20000, 10000, 5000, 2000, 1000, 500, 200, 100, 50];
+function RegisterWithDenominations() {
+  const [reg, setReg] = useState<{
+      id: number;
+      openingAmountCents: number;
+      openedAt: string;
+    } | null>(null),
+    [counts, setCounts] = useState<Record<number, number>>({}),
+    [reason, setReason] = useState(""),
+    [report, setReport] = useState<Record<string, number> | null>(null),
+    a = useAsync();
+  const load = useCallback(
+    () =>
+      a
+        .run(() => api.call<typeof reg>("current_register"))
+        .then((x) => setReg(x ?? null)),
+    [a],
+  );
+  useEffect(() => {
+    void load();
+  }, [load]);
+  const actual = denominationTotal(counts);
+  if (!reg) return <Register />;
+  const close = () => {
+    if (!window.confirm("Confirmer la clôture définitive de la caisse ?"))
+      return;
+    void a
+      .run(() =>
+        api.call<Record<string, number>>("close_register_with_denominations", {
+          lines: madDenominations.map((d) => ({
+            denominationCents: d,
+            quantity: counts[d] || 0,
+          })),
+          differenceReason: reason || null,
+          note: null,
+        }),
+      )
+      .then((x) => {
+        if (x) {
+          setReport(x);
+          setReg(null);
+        }
+      });
+  };
+  if (report)
+    return (
+      <Page title="Rapport de clôture">
+        <section className="card print">
+          <h2>Caisse #{report.id}</h2>
+          <p>Attendu : {money(report.expectedCents)}</p>
+          <p>Compté : {money(report.actualCents)}</p>
+          <p>Écart : {money(report.differenceCents)}</p>
+          <button onClick={() => window.print()}>Imprimer</button>
+        </section>
+      </Page>
+    );
+  return (
+    <Page title="Clôture de caisse" sub="Comptage des espèces en MAD">
+      <ErrorBox message={a.error} />
+      <section className="card narrow">
+        <p>
+          Fond initial : <b>{money(reg.openingAmountCents)}</b>
+        </p>
+        {madDenominations.map((d) => (
+          <div className="status" key={d}>
+            <span>{money(d)}</span>
+            <input
+              aria-label={`Quantité ${money(d)}`}
+              type="number"
+              min="0"
+              step="1"
+              value={counts[d] || 0}
+              onChange={(e) =>
+                setCounts((c) => ({
+                  ...c,
+                  [d]: Math.max(0, Math.floor(Number(e.target.value))),
+                }))
+              }
+            />
+            <b>{money(d * (counts[d] || 0))}</b>
+          </div>
+        ))}
+        <div className="total">
+          <span>Total compté</span>
+          <strong>{money(actual)}</strong>
+        </div>
+        <Input
+          label="Motif de l’écart (requis si nécessaire)"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+        />
+        <button onClick={close} disabled={a.busy}>
+          Clôturer la caisse
+        </button>
+      </section>
+    </Page>
+  );
+}
+type ReturnData = {
+  sale: {
+    id: number;
+    saleNumber: string;
+    createdAt: string;
+    paymentType: string;
+    cashPaidCents: number;
+    creditAmountCents: number;
+    status: string;
+    customer: string;
+    cashier: string;
+  };
+  items: Array<{
+    id: number;
+    productId: number;
+    name: string;
+    productType: string;
+    quantity: number;
+    returnedQuantity: number;
+    unitPriceCents: number;
+    lineTotalCents: number;
+  }>;
+  history: Array<{
+    returnNumber: string;
+    createdAt: string;
+    totalCents: number;
+    debtReductionCents: number;
+    cashRefundCents: number;
+    reason: string;
+  }>;
+};
+function ReturnSale() {
+  const { id } = useParams(),
+    [data, setData] = useState<ReturnData | null>(null),
+    [quantities, setQuantities] = useState<Record<number, number>>({}),
+    [restock, setRestock] = useState<Record<number, boolean>>({}),
+    [reason, setReason] = useState(""),
+    [sent, setSent] = useState(false),
+    [receipt, setReceipt] = useState<Record<string, number | string> | null>(
+      null,
+    ),
+    a = useAsync();
+  const load = useCallback(
+    () =>
+      a
+        .run(() =>
+          api.call<ReturnData>("sale_for_return", { saleId: Number(id) }),
+        )
+        .then((x) => x && setData(x)),
+    [a, id],
+  );
+  useEffect(() => {
+    void load();
+  }, [load]);
+  if (!data)
+    return (
+      <div className="card">
+        Chargement…
+        <ErrorBox message={a.error} />
+      </div>
+    );
+  const total = data.items.reduce(
+    (s, x) =>
+      s + Math.floor((x.lineTotalCents * (quantities[x.id] || 0)) / x.quantity),
+    0,
+  );
+  const priorDebt = data.history.reduce((s, x) => s + x.debtReductionCents, 0),
+    debt = Math.min(
+      total,
+      Math.max(0, data.sale.creditAmountCents - priorDebt),
+    ),
+    cash = Math.max(0, total - debt);
+  const submit = () => {
+    if (sent || !reason.trim() || total <= 0) return;
+    setSent(true);
+    void a
+      .run(() =>
+        api.call<Record<string, number | string>>("create_return", {
+          input: {
+            saleId: data.sale.id,
+            reason,
+            idempotencyKey: crypto.randomUUID(),
+            items: data.items
+              .filter((x) => (quantities[x.id] || 0) > 0)
+              .map((x) => ({
+                saleItemId: x.id,
+                quantity: quantities[x.id],
+                restock:
+                  x.productType === "physical_product" && !!restock[x.id],
+                condition: restock[x.id] ? "restockable" : "damaged",
+              })),
+          },
+        }),
+      )
+      .then((x) => {
+        if (x) {
+          setReceipt(x);
+          void load();
+        } else setSent(false);
+      });
+  };
+  return (
+    <Page
+      title={`Retour · ${data.sale.saleNumber}`}
+      sub={`${data.sale.customer || "Client comptoir"} · ${data.sale.paymentType}`}
+    >
+      <ErrorBox message={a.error} />
+      {receipt && (
+        <div className="success print">
+          Retour {String(receipt.returnNumber)} ·{" "}
+          {money(Number(receipt.totalCents))}{" "}
+          <button onClick={() => window.print()}>Imprimer</button>
+        </div>
+      )}
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Article</th>
+              <th>Vendu</th>
+              <th>Déjà retourné</th>
+              <th>Quantité</th>
+              <th>État</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.items.map((x) => (
+              <tr key={x.id}>
+                <td>
+                  <b>{x.name}</b>
+                  <small>{money(x.unitPriceCents)}</small>
+                </td>
+                <td>{x.quantity}</td>
+                <td>{x.returnedQuantity}</td>
+                <td>
+                  <input
+                    type="number"
+                    min="0"
+                    max={x.quantity - x.returnedQuantity}
+                    value={quantities[x.id] || 0}
+                    onChange={(e) =>
+                      setQuantities((q) => ({
+                        ...q,
+                        [x.id]: Math.min(
+                          x.quantity - x.returnedQuantity,
+                          Math.max(0, Number(e.target.value)),
+                        ),
+                      }))
+                    }
+                  />
+                </td>
+                <td>
+                  {x.productType === "physical_product" ? (
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        checked={!!restock[x.id]}
+                        onChange={(e) =>
+                          setRestock((r) => ({
+                            ...r,
+                            [x.id]: e.target.checked,
+                          }))
+                        }
+                      />{" "}
+                      Remettre en stock
+                    </label>
+                  ) : (
+                    "Service"
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <section className="card narrow">
+        <p>
+          Valeur : <b>{money(total)}</b>
+        </p>
+        <p>
+          Réduction dette : <b>{money(debt)}</b>
+        </p>
+        <p>
+          Remboursement espèces : <b>{money(cash)}</b>
+        </p>
+        <Input
+          label="Motif obligatoire"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+        />
+        <button
+          disabled={sent || !reason.trim() || total <= 0}
+          onClick={submit}
+        >
+          Enregistrer le retour
+        </button>
+      </section>
+      <section className="card">
+        <h2>Historique</h2>
+        {data.history.map((x) => (
+          <p key={x.returnNumber}>
+            <b>{x.returnNumber}</b> · {money(x.totalCents)} · {x.reason}
+          </p>
+        ))}
+        {!data.history.length && <Empty text="Aucun retour" />}
+      </section>
+    </Page>
+  );
+}
+
 type Supplier = {
   id: number;
   name: string;
@@ -1934,7 +2444,7 @@ function Purchases() {
     </Page>
   );
 }
-function Expenses() {
+export function Expenses() {
   const [msg, setMsg] = useState(""),
     a = useAsync();
   const submit = (e: FormEvent<HTMLFormElement>) => {

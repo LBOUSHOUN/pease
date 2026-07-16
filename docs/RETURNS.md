@@ -1,3 +1,3 @@
 # Retours
 
-La règle de ventilation est testée : la valeur retournée réduit d’abord le crédit restant, puis seulement la part comptant remboursable. Les écritures transactionnelles complètes de retour et l’écran restent à implémenter ; voir `IMPLEMENTATION_STATUS.md`.
+La valeur retournée réduit d’abord le crédit restant, puis la part comptant encore remboursable. La transaction valide les quantités, met à jour dette, stock, lignes et statut de vente, et conserve l’historique. Services et articles endommagés ne produisent aucun mouvement de stock.

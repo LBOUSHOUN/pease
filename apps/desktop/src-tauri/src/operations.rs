@@ -1,5 +1,5 @@
 use super::{current, db_err, text, Database, Session};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::State;
@@ -45,6 +45,22 @@ pub struct ExpenseInput {
 pub struct DenominationInput {
     pub denomination_cents: i64,
     pub quantity: i64,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReturnInput {
+    pub sale_id: i64,
+    pub reason: String,
+    pub idempotency_key: String,
+    pub items: Vec<ReturnLine>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReturnLine {
+    pub sale_item_id: i64,
+    pub quantity: i64,
+    pub restock: bool,
+    pub condition: String,
 }
 
 #[tauri::command]
@@ -296,6 +312,158 @@ pub fn correct_expense(
 pub fn calculate_denominations(lines: Vec<DenominationInput>) -> Result<i64, String> {
     denomination_total(&lines)
 }
+
+#[tauri::command]
+pub fn sale_for_return(
+    sale_id: i64,
+    db: State<Database>,
+    session: State<Session>,
+) -> Result<Value, String> {
+    current(&session, "sales.return")?;
+    let c = db.connect()?;
+    let sale=c.query_row("SELECT s.id,s.sale_number,s.created_at,s.payment_type,s.cash_paid_cents,s.credit_amount_cents,s.status,coalesce(c.full_name,''),u.full_name FROM sales s LEFT JOIN customers c ON c.id=s.customer_id JOIN users u ON u.id=s.cashier_id WHERE s.id=?1",[sale_id],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"saleNumber":r.get::<_,String>(1)?,"createdAt":r.get::<_,String>(2)?,"paymentType":r.get::<_,String>(3)?,"cashPaidCents":r.get::<_,i64>(4)?,"creditAmountCents":r.get::<_,i64>(5)?,"status":r.get::<_,String>(6)?,"customer":r.get::<_,String>(7)?,"cashier":r.get::<_,String>(8)?}))).map_err(|_|"Vente introuvable".to_string())?;
+    let mut q=c.prepare("SELECT id,product_id,product_name_snapshot,product_type_snapshot,quantity,returned_quantity,unit_price_cents,line_total_cents FROM sale_items WHERE sale_id=?1").map_err(db_err)?;
+    let items=q.query_map([sale_id],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"productId":r.get::<_,i64>(1)?,"name":r.get::<_,String>(2)?,"productType":r.get::<_,String>(3)?,"quantity":r.get::<_,i64>(4)?,"returnedQuantity":r.get::<_,i64>(5)?,"unitPriceCents":r.get::<_,i64>(6)?,"lineTotalCents":r.get::<_,i64>(7)?}))).map_err(db_err)?.collect::<Result<Vec<_>,_>>().map_err(db_err)?;
+    let mut h=c.prepare("SELECT return_number,created_at,total_return_value_cents,customer_debt_reduction_cents,cash_refund_cents,reason FROM returns WHERE original_sale_id=?1 ORDER BY id DESC").map_err(db_err)?;
+    let history=h.query_map([sale_id],|r|Ok(json!({"returnNumber":r.get::<_,String>(0)?,"createdAt":r.get::<_,String>(1)?,"totalCents":r.get::<_,i64>(2)?,"debtReductionCents":r.get::<_,i64>(3)?,"cashRefundCents":r.get::<_,i64>(4)?,"reason":r.get::<_,String>(5)?}))).map_err(db_err)?.collect::<Result<Vec<_>,_>>().map_err(db_err)?;
+    Ok(json!({"sale":sale,"items":items,"history":history}))
+}
+
+#[tauri::command]
+pub fn create_return(
+    input: ReturnInput,
+    db: State<Database>,
+    session: State<Session>,
+) -> Result<Value, String> {
+    let u = current(&session, "sales.return")?;
+    if input.reason.trim().is_empty()
+        || input.items.is_empty()
+        || input.idempotency_key.trim().is_empty()
+    {
+        return Err("Motif et articles retournés obligatoires".into());
+    }
+    let _g = db.guard()?;
+    let mut c = db.connect()?;
+    let tx = c.transaction().map_err(db_err)?;
+    if tx
+        .query_row(
+            "SELECT id FROM audit_logs WHERE action='return.idempotency' AND new_values_json=?1",
+            [&input.idempotency_key],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(db_err)?
+        .is_some()
+    {
+        return Err("Ce retour a déjà été enregistré".into());
+    }
+    let (customer,cash,credit):(Option<i64>,i64,i64)=tx.query_row("SELECT customer_id,cash_paid_cents,credit_amount_cents FROM sales WHERE id=?1 AND status IN('completed','partially_returned')",[input.sale_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|_|"Vente non retournable".to_string())?;
+    let prior:(i64,i64)=tx.query_row("SELECT coalesce(sum(customer_debt_reduction_cents),0),coalesce(sum(cash_refund_cents),0) FROM returns WHERE original_sale_id=?1",[input.sale_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(db_err)?;
+    let mut prepared = Vec::new();
+    let mut total = 0;
+    for x in &input.items {
+        if x.quantity <= 0 {
+            return Err("Quantité de retour invalide".into());
+        }
+        let row:(i64,String,i64,i64,i64)=tx.query_row("SELECT product_id,product_type_snapshot,quantity,returned_quantity,line_total_cents FROM sale_items WHERE id=?1 AND sale_id=?2",params![x.sale_item_id,input.sale_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(|_|"Article de vente invalide".to_string())?;
+        if x.quantity > row.2 - row.3 {
+            return Err("La quantité dépasse le solde retournable".into());
+        }
+        let amount = row.4 * x.quantity / row.2;
+        total += amount;
+        prepared.push((x, row, amount));
+    }
+    let (debt_refund, cash_refund) =
+        calculate_return_split(total, (credit - prior.0).max(0), (cash - prior.1).max(0))?;
+    let reg = if cash_refund > 0 {
+        Some(
+            tx.query_row(
+                "SELECT id FROM cash_register_sessions WHERE cashier_id=?1 AND status='open'",
+                [u.id],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(|_| "Ouvrez la caisse pour effectuer le remboursement".to_string())?,
+        )
+    } else {
+        None
+    };
+    let number = format!(
+        "R-{}-{:06}",
+        chrono::Local::now().format("%Y%m%d"),
+        tx.query_row("SELECT count(*)+1 FROM returns", [], |r| r.get::<_, i64>(0))
+            .map_err(db_err)?
+    );
+    tx.execute("INSERT INTO returns(return_number,original_sale_id,customer_id,cash_register_session_id,total_return_value_cents,customer_debt_reduction_cents,cash_refund_cents,reason,created_by)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![number,input.sale_id,customer,reg,total,debt_refund,cash_refund,input.reason.trim(),u.id]).map_err(db_err)?;
+    let rid = tx.last_insert_rowid();
+    for (x, row, amount) in prepared {
+        tx.execute(
+            "UPDATE sale_items SET returned_quantity=returned_quantity+?1 WHERE id=?2",
+            params![x.quantity, x.sale_item_id],
+        )
+        .map_err(db_err)?;
+        tx.execute("INSERT INTO return_items(return_id,sale_item_id,product_id,quantity,amount_cents,condition,restock)VALUES(?1,?2,?3,?4,?5,?6,?7)",params![rid,x.sale_item_id,row.0,x.quantity,amount,x.condition,x.restock]).map_err(db_err)?;
+        if row.1 == "physical_product" && x.restock {
+            let before: i64 = tx
+                .query_row(
+                    "SELECT current_stock FROM products WHERE id=?1",
+                    [row.0],
+                    |r| r.get(0),
+                )
+                .map_err(db_err)?;
+            tx.execute(
+                "UPDATE products SET current_stock=current_stock+?1 WHERE id=?2",
+                params![x.quantity, row.0],
+            )
+            .map_err(db_err)?;
+            tx.execute("INSERT INTO stock_movements(product_id,movement_type,quantity_change,stock_before,stock_after,reference_type,reference_id,reason,created_by)VALUES(?1,'customer_return',?2,?3,?4,'return',?5,'Retour client',?6)",params![row.0,x.quantity,before,before+x.quantity,rid,u.id]).map_err(db_err)?;
+        }
+    }
+    if debt_refund > 0 {
+        let cid = customer.ok_or("Client absent pour la dette")?;
+        let debt: i64 = tx
+            .query_row(
+                "SELECT current_debt_cents FROM customers WHERE id=?1",
+                [cid],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        let reduction = debt_refund.min(debt);
+        let after = debt - reduction;
+        tx.execute(
+            "UPDATE customers SET current_debt_cents=?1 WHERE id=?2",
+            params![after, cid],
+        )
+        .map_err(db_err)?;
+        tx.execute("INSERT INTO customer_credit_transactions(customer_id,sale_id,transaction_type,amount_cents,balance_after_cents,notes,created_by)VALUES(?1,?2,'return',?3,?4,?5,?6)",params![cid,input.sale_id,-reduction,after,input.reason,u.id]).map_err(db_err)?;
+    }
+    if let Some(reg) = reg {
+        tx.execute("INSERT INTO cash_movements(cash_register_session_id,movement_type,amount_cents,reference_type,reference_id,reason,created_by)VALUES(?1,'refund',?2,'return',?3,?4,?5)",params![reg,cash_refund,rid,input.reason,u.id]).map_err(db_err)?;
+    }
+    let remaining: i64 = tx
+        .query_row(
+            "SELECT coalesce(sum(quantity-returned_quantity),0) FROM sale_items WHERE sale_id=?1",
+            [input.sale_id],
+            |r| r.get(0),
+        )
+        .map_err(db_err)?;
+    tx.execute(
+        "UPDATE sales SET status=?1,updated_at=CURRENT_TIMESTAMP WHERE id=?2",
+        params![
+            if remaining == 0 {
+                "returned"
+            } else {
+                "partially_returned"
+            },
+            input.sale_id
+        ],
+    )
+    .map_err(db_err)?;
+    tx.execute("INSERT INTO audit_logs(user_id,action,entity_type,entity_id,new_values_json)VALUES(?1,'return.idempotency','return',?2,?3)",params![u.id,rid,input.idempotency_key]).map_err(db_err)?;
+    tx.commit().map_err(db_err)?;
+    Ok(
+        json!({"id":rid,"returnNumber":number,"totalCents":total,"debtReductionCents":debt_refund,"cashRefundCents":cash_refund}),
+    )
+}
 fn denomination_total(lines: &[DenominationInput]) -> Result<i64, String> {
     let allowed = [20000, 10000, 5000, 2000, 1000, 500, 200, 100, 50];
     let mut total = 0i64;
@@ -312,6 +480,37 @@ fn denomination_total(lines: &[DenominationInput]) -> Result<i64, String> {
             .ok_or("Montant trop élevé")?;
     }
     Ok(total)
+}
+#[tauri::command]
+pub fn close_register_with_denominations(
+    lines: Vec<DenominationInput>,
+    difference_reason: Option<String>,
+    note: Option<String>,
+    db: State<Database>,
+    session: State<Session>,
+) -> Result<Value, String> {
+    let u = current(&session, "register.close")?;
+    let actual = denomination_total(&lines)?;
+    let _g = db.guard()?;
+    let mut c = db.connect()?;
+    let tx = c.transaction().map_err(db_err)?;
+    let (id,opening):(i64,i64)=tx.query_row("SELECT id,opening_amount_cents FROM cash_register_sessions WHERE cashier_id=?1 AND status='open'",[u.id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|_|"Aucune caisse ouverte".to_string())?;
+    let net:i64=tx.query_row("SELECT coalesce(sum(CASE WHEN movement_type IN('sale','customer_payment','cash_in') THEN amount_cents WHEN movement_type IN('purchase_payment','supplier_payment','expense','refund','cash_out') THEN -amount_cents ELSE 0 END),0) FROM cash_movements WHERE cash_register_session_id=?1",[id],|r|r.get(0)).map_err(db_err)?;
+    let expected = opening + net;
+    let difference = actual - expected;
+    if difference != 0 && text(difference_reason.clone()).is_none() {
+        return Err("Un motif est obligatoire en cas d’écart".into());
+    }
+    for x in lines {
+        if x.quantity > 0 {
+            tx.execute("INSERT INTO cash_register_denominations(cash_register_session_id,denomination_cents,quantity,total_cents)VALUES(?1,?2,?3,?4)",params![id,x.denomination_cents,x.quantity,x.denomination_cents*x.quantity]).map_err(db_err)?;
+        }
+    }
+    tx.execute("UPDATE cash_register_sessions SET status='closed',closed_at=CURRENT_TIMESTAMP,expected_closing_cents=?1,actual_closing_cents=?2,difference_cents=?3,difference_reason=?4,updated_at=CURRENT_TIMESTAMP WHERE id=?5 AND status='open'",params![expected,actual,difference,text(difference_reason),id]).map_err(db_err)?;
+    tx.execute("INSERT INTO cash_movements(cash_register_session_id,movement_type,amount_cents,reason,created_by)VALUES(?1,'closing',?2,?3,?4)",params![id,actual,text(note),u.id]).map_err(db_err)?;
+    tx.execute("INSERT INTO audit_logs(user_id,action,entity_type,entity_id,new_values_json)VALUES(?1,'register.closed','cash_register',?2,?3)",params![u.id,id,json!({"expectedCents":expected,"actualCents":actual,"differenceCents":difference}).to_string()]).map_err(db_err)?;
+    tx.commit().map_err(db_err)?;
+    Ok(json!({"id":id,"expectedCents":expected,"actualCents":actual,"differenceCents":difference}))
 }
 #[tauri::command]
 pub fn calculate_return_split(
