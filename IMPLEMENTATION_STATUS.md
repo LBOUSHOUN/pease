@@ -23,7 +23,7 @@
 | Achats multi-lignes | complet pour création transactionnelle | compilation testée, intégration à étendre |
 | Dépenses | création, liste paginée/filtrée et correction transactionnelle avec UI | build testé |
 | Retours | transaction multi-articles, dette avant espèces, stock, historique et reçu simple | calculs Rust et build testés; intégration à étendre |
-| Employés | permissions et schéma uniquement | non testé |
+| Employés | liste, création/modification, rôles, activation et réinitialisation; activité détaillée à ajouter | build testé, tests d’intégration à étendre |
 | Rapports détaillés/exports CSV | manquant | non testé |
 | Paramètres | complet pour les champs affichés | test manuel restant |
 | Sauvegarde/restauration | complet | test manuel restant |

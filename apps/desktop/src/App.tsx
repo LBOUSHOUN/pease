@@ -17,7 +17,14 @@ import {
 } from "react-router-dom";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { api, User } from "./api";
-import { CartLine, cartTotal, denominationTotal, money, ScannerBuffer, toCents } from "./lib";
+import {
+  CartLine,
+  cartTotal,
+  denominationTotal,
+  money,
+  ScannerBuffer,
+  toCents,
+} from "./lib";
 import "./App.css";
 type Bootstrap = {
   needsOnboarding: boolean;
@@ -118,6 +125,17 @@ export default function App() {
       />
     );
   if (!boot.user) return <Login done={(u) => setBoot({ ...boot, user: u })} />;
+  if (boot.user.mustChangePassword)
+    return (
+      <ChangePassword
+        user={boot.user}
+        done={(u) => setBoot({ ...boot, user: u })}
+        logout={async () => {
+          await api.call("logout");
+          setBoot({ ...boot, user: null });
+        }}
+      />
+    );
   return (
     <BrowserRouter>
       <Shell
@@ -256,6 +274,7 @@ const nav = [
   ["suppliers", "Fournisseurs", "suppliers.view"],
   ["purchases", "Achats", "purchases.view"],
   ["expenses", "Dépenses", "expenses.view"],
+  ["employees", "Employés", "workers.view"],
   ["register", "Caisses", "register.open"],
   ["settings", "Paramètres", "settings.manage"],
   ["backup", "Sauvegarde", "backup.manage"],
@@ -399,6 +418,14 @@ function Shell({
               element={
                 <Allowed u={user} p="sales.return">
                   <ReturnSale />
+                </Allowed>
+              }
+            />
+            <Route
+              path="/employees"
+              element={
+                <Allowed u={user} p="workers.view">
+                  <Employees user={user} />
                 </Allowed>
               }
             />
@@ -1639,6 +1666,310 @@ function Settings() {
     </Page>
   );
 }
+function ChangePassword({
+  user,
+  done,
+  logout,
+}: {
+  user: User;
+  done: (u: User) => void;
+  logout: () => void;
+}) {
+  const a = useAsync(),
+    [sent, setSent] = useState(false);
+  const submit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (sent) return;
+    const f = new FormData(e.currentTarget);
+    if (f.get("new") !== f.get("confirm")) {
+      a.setError("Les mots de passe ne correspondent pas");
+      return;
+    }
+    setSent(true);
+    void a
+      .run(() =>
+        api.call<User>("change_current_password", {
+          currentPassword: f.get("current"),
+          newPassword: f.get("new"),
+        }),
+      )
+      .then((x) => {
+        if (x) done(x);
+        else setSent(false);
+      });
+  };
+  return (
+    <main className="auth">
+      <section className="login">
+        <div className="brand">M</div>
+        <h1>Changer le mot de passe</h1>
+        <p>
+          {user.fullName}, définissez votre mot de passe personnel avant de
+          continuer.
+        </p>
+        <ErrorBox message={a.error} />
+        <form onSubmit={submit}>
+          <Input
+            label="Mot de passe temporaire"
+            name="current"
+            type="password"
+            required
+          />
+          <Input
+            label="Nouveau mot de passe"
+            name="new"
+            type="password"
+            minLength={8}
+            required
+          />
+          <Input label="Confirmation" name="confirm" type="password" required />
+          <button disabled={sent}>Enregistrer</button>
+          <button type="button" className="secondary" onClick={logout}>
+            Déconnexion
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+type Worker = {
+  id: number;
+  fullName: string;
+  username: string;
+  email: string;
+  phone: string;
+  role: string;
+  isActive: boolean;
+  mustChangePassword: boolean;
+  lastLoginAt: string | null;
+  createdAt: string;
+};
+function Employees({ user }: { user: User }) {
+  const [items, setItems] = useState<Worker[]>([]),
+    [search, setSearch] = useState(""),
+    [edit, setEdit] = useState<Worker | null | undefined>(),
+    [temporary, setTemporary] = useState(""),
+    a = useAsync();
+  const load = useCallback(
+    () =>
+      a
+        .run(() =>
+          api.call<Worker[]>("list_workers", {
+            search: search || null,
+            role: null,
+            active: null,
+            page: 1,
+          }),
+        )
+        .then((x) => x && setItems(x)),
+    [a, search],
+  );
+  useEffect(() => {
+    const t = setTimeout(() => void load(), 250);
+    return () => clearTimeout(t);
+  }, [load]);
+  const reset = (x: Worker) => {
+    if (!confirm(`Réinitialiser le mot de passe de ${x.fullName} ?`)) return;
+    void a
+      .run(() =>
+        api.call<string>("reset_worker_password", { id: x.id, password: null }),
+      )
+      .then((p) => p && setTemporary(p));
+  };
+  return (
+    <Page
+      title="Employés"
+      sub="Comptes locaux, rôles et activité"
+      action={
+        user.permissions.includes("workers.create") ? (
+          <button onClick={() => setEdit(null)}>+ Nouvel employé</button>
+        ) : null
+      }
+    >
+      <ErrorBox message={a.error} />
+      {temporary && (
+        <div className="success">
+          Mot de passe temporaire (affiché une seule fois) :{" "}
+          <code>{temporary}</code>
+          <button className="link" onClick={() => setTemporary("")}>
+            Masquer
+          </button>
+        </div>
+      )}
+      <div className="toolbar">
+        <input
+          placeholder="Nom, identifiant ou e-mail…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Employé</th>
+              <th>Rôle</th>
+              <th>Dernière connexion</th>
+              <th>État</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((x) => (
+              <tr key={x.id}>
+                <td>
+                  <b>{x.fullName}</b>
+                  <small>
+                    {x.username} · {x.email || "sans e-mail"}
+                  </small>
+                </td>
+                <td>
+                  <span className="pill">{roleName[x.role]}</span>
+                </td>
+                <td>{x.lastLoginAt || "Jamais"}</td>
+                <td>
+                  {x.isActive ? "Actif" : "Inactif"}
+                  {x.mustChangePassword && <small>Changement requis</small>}
+                </td>
+                <td>
+                  <button className="link" onClick={() => setEdit(x)}>
+                    Modifier
+                  </button>
+                  {user.permissions.includes("workers.reset_password") && (
+                    <button className="link" onClick={() => reset(x)}>
+                      Réinitialiser
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {edit !== undefined && (
+        <WorkerForm
+          value={edit}
+          actor={user}
+          close={() => setEdit(undefined)}
+          done={() => {
+            setEdit(undefined);
+            void load();
+          }}
+        />
+      )}
+    </Page>
+  );
+}
+function WorkerForm({
+  value,
+  actor,
+  close,
+  done,
+}: {
+  value: Worker | null;
+  actor: User;
+  close: () => void;
+  done: () => void;
+}) {
+  const a = useAsync();
+  const submit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    if (!value && f.get("password") !== f.get("confirm")) {
+      a.setError("Les mots de passe ne correspondent pas");
+      return;
+    }
+    void a
+      .run(() =>
+        api.call("save_worker", {
+          input: {
+            id: value?.id ?? null,
+            fullName: f.get("name"),
+            username: f.get("username"),
+            email: f.get("email") || null,
+            phone: f.get("phone") || null,
+            role: f.get("role"),
+            isActive: f.get("active") === "on",
+            temporaryPassword: value ? null : f.get("password"),
+          },
+        }),
+      )
+      .then((x) => x !== undefined && done());
+  };
+  return (
+    <Modal
+      title={value ? "Modifier l’employé" : "Nouvel employé"}
+      close={close}
+    >
+      <ErrorBox message={a.error} />
+      <form onSubmit={submit}>
+        <Input
+          label="Nom complet"
+          name="name"
+          defaultValue={value?.fullName}
+          required
+        />
+        <Input
+          label="Identifiant"
+          name="username"
+          defaultValue={value?.username}
+          required
+        />
+        <div className="two">
+          <Input
+            label="E-mail"
+            name="email"
+            type="email"
+            defaultValue={value?.email}
+          />
+          <Input label="Téléphone" name="phone" defaultValue={value?.phone} />
+        </div>
+        <label>
+          <span>Rôle</span>
+          <select name="role" defaultValue={value?.role ?? "cashier"}>
+            {actor.role === "global_admin" && (
+              <option value="global_admin">Administrateur global</option>
+            )}
+            <option value="manager">Gérant</option>
+            <option value="cashier">Caissier</option>
+            <option value="stock_worker">Responsable stock</option>
+          </select>
+        </label>
+        {!value && (
+          <>
+            <Input
+              label="Mot de passe temporaire"
+              name="password"
+              type="password"
+              required
+            />
+            <Input
+              label="Confirmation"
+              name="confirm"
+              type="password"
+              required
+            />
+          </>
+        )}
+        <label className="check">
+          <input
+            type="checkbox"
+            name="active"
+            defaultChecked={value?.isActive ?? true}
+          />{" "}
+          Compte actif
+        </label>
+        <div className="actions">
+          <button type="button" className="secondary" onClick={close}>
+            Annuler
+          </button>
+          <button>Enregistrer</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 type ExpenseRow = {
   id: number;
   category: string;

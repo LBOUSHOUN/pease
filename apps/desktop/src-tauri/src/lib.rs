@@ -1,5 +1,6 @@
 mod db;
 mod operations;
+mod workforce;
 use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
@@ -120,10 +121,24 @@ fn role_permissions(role: &str) -> Vec<String> {
         "workers.view",
         "workers.create",
         "workers.edit",
+        "workers.activate",
+        "workers.reset_password",
         "reports.sales",
         "reports.profit",
         "reports.cash",
         "reports.workers",
+        "reports.stock",
+        "reports.customers",
+        "reports.suppliers",
+        "reports.expenses",
+        "reports.daily_closing",
+        "exports.products",
+        "exports.customers",
+        "exports.suppliers",
+        "exports.sales",
+        "exports.stock",
+        "exports.financials",
+        "exports.audit",
         "backup.manage",
         "settings.manage",
         "audit.view",
@@ -172,6 +187,9 @@ fn current(session: &State<Session>, permission: &str) -> Result<SafeUser, Strin
         .map_err(|_| "Session indisponible".to_string())?
         .clone()
         .ok_or("Veuillez vous connecter".to_string())?;
+    if u.must_change_password {
+        return Err("Vous devez changer votre mot de passe avant de continuer".into());
+    }
     if !u.permissions.iter().any(|p| p == permission) {
         return Err("Vous n’avez pas l’autorisation requise".into());
     }
@@ -888,7 +906,11 @@ pub fn run() {
             operations::calculate_denominations,
             operations::sale_for_return,
             operations::create_return,
-            operations::close_register_with_denominations
+            operations::close_register_with_denominations,
+            workforce::list_workers,
+            workforce::save_worker,
+            workforce::reset_worker_password,
+            workforce::change_current_password
         ])
         .run(tauri::generate_context!())
         .expect("error while running Maktaba POS")
