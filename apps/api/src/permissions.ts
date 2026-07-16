@@ -22,6 +22,11 @@ const all = [
   "expenses.create",
   "register.open",
   "register.close",
+  "register.view",
+  "register.movements.view",
+  "customers.manage",
+  "credit.view",
+  "credit.manage",
   "reports.sales",
   "reports.profit",
   "exports.manage",
@@ -45,6 +50,11 @@ export function permissions(role: Role) {
       "stock.view",
       "register.open",
       "register.close",
+      "register.view",
+      "register.movements.view",
+      "customers.manage",
+      "credit.view",
+      "credit.manage",
     ];
   return [
     "dashboard.view",

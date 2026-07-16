@@ -1,21 +1,267 @@
-export const roles=['global_admin','manager','cashier','stock_worker'] as const;export type Role=typeof roles[number];
-export type Permission=string;
-export interface SafeUser{id:number;fullName:string;username:string;email:string|null;role:Role;mustChangePassword:boolean;permissions:Permission[]}
-export interface ApiError{code:string;message:string;fieldErrors?:Record<string,string[]>;requestId?:string}
-export interface Pagination{page:number;pageSize:number;totalRows:number;totalPages:number}
-export interface DateRange{start:string;end:string}
-export type MoneyCents=number;
-export type ProductType="physical_product"|"service";
-export type ActiveStatus="all"|"active"|"inactive";
-export type SortDirection="asc"|"desc";
-export type StockMovementType="opening_stock"|"stock_in"|"stock_out"|"damaged"|"lost"|"manual_adjustment"|"inventory_adjustment";
-export interface Category{id:number;name:string;description:string|null;isActive:boolean;createdBy:number;createdAt:string;updatedAt:string;productCount?:number}
-export interface CategoryListResponse extends Pagination{rows:Category[]}
-export interface ProductListRow{id:number;categoryId:number|null;categoryName:string|null;name:string;productType:ProductType;sku:string|null;manufacturerBarcode?:string|null;internalBarcode:string;qrIdentifier?:string;purchasePriceCents?:number;sellingPriceCents:number;currentStock:number;minimumStock:number;unit:string;shelfLocation:string|null;isActive:boolean;trackStock:boolean;isLowStock:boolean;isOutOfStock:boolean}
-export interface ProductDetail extends ProductListRow{description:string|null;manufacturerBarcode:string|null;qrIdentifier:string;wholesalePriceCents:number;wholesaleMinQuantity:number;createdBy:number;createdAt:string;updatedAt:string}
-export interface ProductListResponse extends Pagination{rows:ProductListRow[]}
-export interface ProductLookup{product:ProductListRow}
-export interface StockSummary extends ProductListRow{stockValueCents?:number}
-export interface StockListResponse extends Pagination{rows:StockSummary[]}
-export interface StockMovement{id:number;productId:number;productName:string;movementType:StockMovementType;quantityChange:number;stockBefore:number;stockAfter:number;workerId:number;workerName:string;reason:string;referenceType:string|null;referenceId:number|null;createdAt:string}
-export interface StockMovementListResponse extends Pagination{rows:StockMovement[]}
+export const roles = [
+  "global_admin",
+  "manager",
+  "cashier",
+  "stock_worker",
+] as const;
+export type Role = (typeof roles)[number];
+export type Permission = string;
+export interface SafeUser {
+  id: number;
+  fullName: string;
+  username: string;
+  email: string | null;
+  role: Role;
+  mustChangePassword: boolean;
+  permissions: Permission[];
+}
+export interface ApiError {
+  code: string;
+  message: string;
+  fieldErrors?: Record<string, string[]>;
+  requestId?: string;
+}
+export interface Pagination {
+  page: number;
+  pageSize: number;
+  totalRows: number;
+  totalPages: number;
+}
+export interface DateRange {
+  start: string;
+  end: string;
+}
+export type MoneyCents = number;
+export type ProductType = "physical_product" | "service";
+export type ActiveStatus = "all" | "active" | "inactive";
+export type SortDirection = "asc" | "desc";
+export type StockMovementType =
+  | "opening_stock"
+  | "stock_in"
+  | "stock_out"
+  | "damaged"
+  | "lost"
+  | "manual_adjustment"
+  | "inventory_adjustment";
+export interface Category {
+  id: number;
+  name: string;
+  description: string | null;
+  isActive: boolean;
+  createdBy: number;
+  createdAt: string;
+  updatedAt: string;
+  productCount?: number;
+}
+export interface CategoryListResponse extends Pagination {
+  rows: Category[];
+}
+export interface ProductListRow {
+  id: number;
+  categoryId: number | null;
+  categoryName: string | null;
+  name: string;
+  productType: ProductType;
+  sku: string | null;
+  manufacturerBarcode?: string | null;
+  internalBarcode: string;
+  qrIdentifier?: string;
+  purchasePriceCents?: number;
+  sellingPriceCents: number;
+  currentStock: number;
+  minimumStock: number;
+  unit: string;
+  shelfLocation: string | null;
+  isActive: boolean;
+  trackStock: boolean;
+  isLowStock: boolean;
+  isOutOfStock: boolean;
+}
+export interface ProductDetail extends ProductListRow {
+  description: string | null;
+  manufacturerBarcode: string | null;
+  qrIdentifier: string;
+  wholesalePriceCents: number;
+  wholesaleMinQuantity: number;
+  createdBy: number;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface ProductListResponse extends Pagination {
+  rows: ProductListRow[];
+}
+export interface ProductLookup {
+  product: ProductListRow;
+}
+export interface StockSummary extends ProductListRow {
+  stockValueCents?: number;
+}
+export interface StockListResponse extends Pagination {
+  rows: StockSummary[];
+}
+export interface StockMovement {
+  id: number;
+  productId: number;
+  productName: string;
+  movementType: StockMovementType;
+  quantityChange: number;
+  stockBefore: number;
+  stockAfter: number;
+  workerId: number;
+  workerName: string;
+  reason: string;
+  referenceType: string | null;
+  referenceId: number | null;
+  createdAt: string;
+}
+export interface StockMovementListResponse extends Pagination {
+  rows: StockMovement[];
+}
+export type PaymentMode = "cash" | "credit" | "partial";
+export interface DenominationLine {
+  denominationCents: number;
+  quantity: number;
+  totalCents?: number;
+}
+export interface RegisterSummary {
+  cashSalesCents: number;
+  debtPaymentsCents: number;
+  cashMovementCount: number;
+  saleCount: number;
+  cashSaleCount: number;
+}
+export interface RegisterStatus {
+  isOpen: boolean;
+  sessionId?: number;
+  cashierId?: number;
+  cashierName?: string;
+  openedAt?: string;
+  openingCashCents: number;
+  expectedCashCents: number;
+  currentCashCents: number;
+  summary: RegisterSummary;
+}
+export interface RegisterSession {
+  id: number;
+  cashierId: number;
+  cashierName: string;
+  openedAt: string;
+  openingCashCents: number;
+  closedAt: string | null;
+  expectedCashCents: number | null;
+  actualCashCents: number | null;
+  differenceCents: number | null;
+  differenceReason: string | null;
+  openingNote: string | null;
+  closingNote: string | null;
+  status: "open" | "closed";
+  denominations?: DenominationLine[];
+  summary?: RegisterSummary;
+}
+export interface RegisterSessionListResponse extends Pagination {
+  rows: RegisterSession[];
+}
+export interface RegisterMovement {
+  id: number;
+  registerSessionId: number;
+  movementType: string;
+  amountCents: number;
+  direction: "in" | "out";
+  reason: string | null;
+  referenceType: string | null;
+  referenceId: number | null;
+  workerId: number;
+  workerName: string;
+  createdAt: string;
+}
+export interface RegisterMovementListResponse extends Pagination {
+  rows: RegisterMovement[];
+}
+export interface Customer {
+  id: number;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  address: string | null;
+  notes: string | null;
+  creditLimitCents: number;
+  currentDebtCents: number;
+  isActive: boolean;
+  createdBy: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface CustomerListResponse extends Pagination {
+  rows: Customer[];
+}
+export interface CustomerCreditTransaction {
+  id: number;
+  customerId: number;
+  saleId: number | null;
+  registerSessionId: number | null;
+  transactionType: "credit_sale" | "debt_payment" | "adjustment";
+  amountCents: number;
+  balanceBeforeCents: number;
+  balanceAfterCents: number;
+  notes: string | null;
+  workerId: number;
+  workerName: string;
+  createdAt: string;
+}
+export interface CustomerCreditListResponse extends Pagination {
+  rows: CustomerCreditTransaction[];
+}
+export interface SaleCartLine {
+  productId: number;
+  quantity: number;
+}
+export interface SaleResult {
+  id: number;
+  saleNumber: string;
+  subtotalCents: number;
+  totalCents: number;
+  cashPaidCents: number;
+  creditAmountCents: number;
+  paymentMode: PaymentMode;
+  duplicate: boolean;
+}
+export interface SaleListRow {
+  id: number;
+  saleNumber: string;
+  createdAt: string;
+  customerId: number | null;
+  customerName: string | null;
+  workerId: number;
+  workerName: string;
+  itemCount: number;
+  totalCents: number;
+  cashPaidCents: number;
+  creditAmountCents: number;
+  paymentMode: PaymentMode;
+  status: string;
+}
+export interface SaleListResponse extends Pagination {
+  rows: SaleListRow[];
+}
+export interface SaleItem {
+  id: number;
+  productId: number;
+  productName: string;
+  productType: ProductType;
+  sku: string | null;
+  barcode: string | null;
+  quantity: number;
+  unitPriceCents: number;
+  lineTotalCents: number;
+}
+export interface SaleDetail extends SaleListRow {
+  registerSessionId: number | null;
+  notes: string | null;
+  items: SaleItem[];
+  stockMovements?: StockMovement[];
+  creditTransaction?: CustomerCreditTransaction | null;
+  shopName: string;
+  shopPhone: string | null;
+  shopAddress: string | null;
+  receiptFooter: string | null;
+}

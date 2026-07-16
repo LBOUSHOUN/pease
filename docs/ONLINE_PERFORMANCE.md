@@ -18,6 +18,12 @@ Le chargement non authentifié produit exactement une requête bootstrap et une 
 
 Le bundle principal avant la passe mesurait 238,52 kB (76,55 kB gzip). L’augmentation de 1,75 kB brut / 0,91 kB gzip correspond au client HTTP durci et à la gestion explicite du cycle de session; le code du tableau de bord et de la PWA est désormais différé. React, React DOM et React Router sont les principales dépendances; `npm find-dupes` ne signale aucun doublon installable.
 
+## Mesure Phase 3
+
+Le bundle initial passe de 243,10 kB (78,25 kB gzip) après Phase 2 à 245,53 kB (78,71 kB gzip). Phase 3 est chargée à la demande dans 24,81 kB (6,26 kB gzip); le scanner partagé occupe 1,31 kB (0,75 kB gzip). Le CSS passe de 3,52 kB (1,34 kB gzip) à 4,33 kB (1,55 kB gzip). Aucune dépendance n’a été ajoutée.
+
+Médianes locales de cinq lectures PostgreSQL/Fastify : statut caisse 20,12 ms, clients 14,09 ms, ventes 13,54 ms et mouvements caisse 12,05 ms. Il s’agit de repères locaux, pas de garanties VPS.
+
 ## Vérification
 
 ```powershell
@@ -33,4 +39,4 @@ Les tests d’intégration créent/utilisent la base isolée `maktaba_test`, app
 
 ## Limites connues
 
-Les catégories, produits, services et le stock sont implémentés en ligne. POS, ventes, tiers, achats, dépenses, retours et rapports ne le sont pas encore; il n’existe aucune synchronisation avec le desktop. Les mesures réseau devront être refaites sur le VPS avec HTTPS, latence réelle et données représentatives. Le service worker de production précache l’interface statique mais l’API reste exclusivement réseau.
+Les catégories, produits, services, stock, caisse, clients, crédit, POS et ventes sont implémentés en ligne. Fournisseurs, achats, dépenses, retours et rapports ne le sont pas encore; il n’existe aucune synchronisation avec le desktop. Les mesures réseau devront être refaites sur le VPS avec HTTPS, latence réelle et données représentatives. Le service worker de production précache l’interface statique mais l’API reste exclusivement réseau.

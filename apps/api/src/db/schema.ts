@@ -24,6 +24,9 @@ export const appSettings = pgTable("app_settings", {
   nextBarcodeSequence: bigint("next_barcode_sequence", { mode: "number" })
     .notNull()
     .default(1),
+  nextSaleSequence: bigint("next_sale_sequence", { mode: "number" })
+    .notNull()
+    .default(1),
   lowStockDefault: integer("low_stock_default").notNull().default(5),
   receiptWidth: integer("receipt_width").notNull().default(80),
   createdAt: ts("created_at"),
@@ -79,17 +82,26 @@ export const sessions = pgTable(
     index("sessions_expiry_idx").on(t.expiresAt),
   ],
 );
-export const categories = pgTable("categories", {
-  id: serial().primaryKey(),
-  name: text().notNull(),
-  description: text(),
-  isActive: boolean("is_active").notNull().default(true),
-  createdBy: integer("created_by")
-    .notNull()
-    .references(() => users.id),
-  createdAt: ts("created_at"),
-  updatedAt: ts("updated_at"),
-},(t)=>[uniqueIndex("categories_name_normalized_uq").on(sql`lower(trim(${t.name}))`),index("categories_active_idx").on(t.isActive)]);
+export const categories = pgTable(
+  "categories",
+  {
+    id: serial().primaryKey(),
+    name: text().notNull(),
+    description: text(),
+    isActive: boolean("is_active").notNull().default(true),
+    createdBy: integer("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: ts("created_at"),
+    updatedAt: ts("updated_at"),
+  },
+  (t) => [
+    uniqueIndex("categories_name_normalized_uq").on(
+      sql`lower(trim(${t.name}))`,
+    ),
+    index("categories_active_idx").on(t.isActive),
+  ],
+);
 export const products = pgTable(
   "products",
   {
@@ -129,7 +141,7 @@ export const products = pgTable(
   (t) => [
     index("products_name_idx").on(t.name),
     index("products_category_idx").on(t.categoryId),
-    index("products_active_type_idx").on(t.isActive,t.productType),
+    index("products_active_type_idx").on(t.isActive, t.productType),
     index("products_sku_idx").on(t.sku),
     index("products_manufacturer_barcode_idx").on(t.manufacturerBarcode),
     index("products_internal_barcode_idx").on(t.internalBarcode),
@@ -139,9 +151,18 @@ export const products = pgTable(
       "product_prices_ck",
       sql`${t.purchasePriceCents}>=0 and ${t.sellingPriceCents}>=0`,
     ),
-    check("product_other_values_ck",sql`${t.wholesalePriceCents}>=0 and ${t.wholesaleMinQuantity}>=0 and ${t.minimumStock}>=0`),
-    check("product_type_ck",sql`${t.productType} in ('physical_product','service')`),
-    check("service_stock_ck",sql`${t.productType}<>'service' or (${t.trackStock}=false and ${t.currentStock}=0)`),
+    check(
+      "product_other_values_ck",
+      sql`${t.wholesalePriceCents}>=0 and ${t.wholesaleMinQuantity}>=0 and ${t.minimumStock}>=0`,
+    ),
+    check(
+      "product_type_ck",
+      sql`${t.productType} in ('physical_product','service')`,
+    ),
+    check(
+      "service_stock_ck",
+      sql`${t.productType}<>'service' or (${t.trackStock}=false and ${t.currentStock}=0)`,
+    ),
   ],
 );
 export const productPriceHistory = pgTable("product_price_history", {
@@ -158,23 +179,35 @@ export const productPriceHistory = pgTable("product_price_history", {
     .references(() => users.id),
   createdAt: ts("created_at"),
 });
-export const customers = pgTable("customers", {
-  id: serial().primaryKey(),
-  fullName: text("full_name").notNull(),
-  phone: text(),
-  email: text(),
-  address: text(),
-  notes: text(),
-  creditLimitCents: bigint("credit_limit_cents", { mode: "number" })
-    .notNull()
-    .default(0),
-  currentDebtCents: bigint("current_debt_cents", { mode: "number" })
-    .notNull()
-    .default(0),
-  isActive: boolean("is_active").notNull().default(true),
-  createdAt: ts("created_at"),
-  updatedAt: ts("updated_at"),
-});
+export const customers = pgTable(
+  "customers",
+  {
+    id: serial().primaryKey(),
+    fullName: text("full_name").notNull(),
+    phone: text(),
+    email: text(),
+    address: text(),
+    notes: text(),
+    creditLimitCents: bigint("credit_limit_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    currentDebtCents: bigint("current_debt_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdBy: integer("created_by").references(() => users.id),
+    createdAt: ts("created_at"),
+    updatedAt: ts("updated_at"),
+  },
+  (t) => [
+    index("customers_name_idx").on(t.fullName),
+    index("customers_active_debt_idx").on(t.isActive, t.currentDebtCents),
+    check(
+      "customers_money_ck",
+      sql`${t.creditLimitCents}>=0 and ${t.currentDebtCents}>=0`,
+    ),
+  ],
+);
 export const suppliers = pgTable("suppliers", {
   id: serial().primaryKey(),
   name: text().notNull(),
@@ -206,6 +239,10 @@ export const registerSessions = pgTable(
     actualClosingCents: bigint("actual_closing_cents", { mode: "number" }),
     differenceCents: bigint("difference_cents", { mode: "number" }),
     differenceReason: text("difference_reason"),
+    openingNote: text("opening_note"),
+    closingNote: text("closing_note"),
+    openingIdempotencyKey: text("opening_idempotency_key"),
+    closingIdempotencyKey: text("closing_idempotency_key"),
     status: text().notNull().default("open"),
     createdAt: ts("created_at"),
     updatedAt: ts("updated_at"),
@@ -214,82 +251,153 @@ export const registerSessions = pgTable(
     uniqueIndex("one_open_register")
       .on(t.cashierId)
       .where(sql`${t.status}='open'`),
+    uniqueIndex("register_open_idempotency_uq")
+      .on(t.cashierId, t.openingIdempotencyKey)
+      .where(sql`${t.openingIdempotencyKey} is not null`),
+    uniqueIndex("register_close_idempotency_uq")
+      .on(t.cashierId, t.closingIdempotencyKey)
+      .where(sql`${t.closingIdempotencyKey} is not null`),
+    index("register_cashier_date_idx").on(t.cashierId, t.openedAt),
+    check(
+      "register_money_ck",
+      sql`${t.openingAmountCents}>=0 and (${t.actualClosingCents} is null or ${t.actualClosingCents}>=0)`,
+    ),
+    check("register_status_ck", sql`${t.status} in ('open','closed')`),
   ],
 );
-export const denominations = pgTable("cash_register_denominations", {
-  id: serial().primaryKey(),
-  cashRegisterSessionId: integer("cash_register_session_id")
-    .notNull()
-    .references(() => registerSessions.id),
-  denominationCents: integer("denomination_cents").notNull(),
-  quantity: integer().notNull(),
-  totalCents: bigint("total_cents", { mode: "number" }).notNull(),
-});
-export const sales = pgTable("sales", {
-  id: serial().primaryKey(),
-  saleNumber: text("sale_number").notNull().unique(),
-  customerId: integer("customer_id").references(() => customers.id),
-  cashierId: integer("cashier_id")
-    .notNull()
-    .references(() => users.id),
-  cashRegisterSessionId: integer("cash_register_session_id").references(
-    () => registerSessions.id,
-  ),
-  subtotalCents: bigint("subtotal_cents", { mode: "number" }).notNull(),
-  discountCents: bigint("discount_cents", { mode: "number" }).notNull(),
-  totalCents: bigint("total_cents", { mode: "number" }).notNull(),
-  cashPaidCents: bigint("cash_paid_cents", { mode: "number" }).notNull(),
-  creditAmountCents: bigint("credit_amount_cents", {
-    mode: "number",
-  }).notNull(),
-  changeCents: bigint("change_cents", { mode: "number" }).notNull(),
-  paymentType: text("payment_type").notNull(),
-  status: text().notNull(),
-  notes: text(),
-  idempotencyKey: text("idempotency_key").notNull().unique(),
-  createdAt: ts("created_at"),
-  updatedAt: ts("updated_at"),
-});
-export const saleItems = pgTable("sale_items", {
-  id: serial().primaryKey(),
-  saleId: integer("sale_id")
-    .notNull()
-    .references(() => sales.id),
-  productId: integer("product_id")
-    .notNull()
-    .references(() => products.id),
-  productNameSnapshot: text("product_name_snapshot").notNull(),
-  skuSnapshot: text("sku_snapshot"),
-  barcodeSnapshot: text("barcode_snapshot"),
-  productTypeSnapshot: text("product_type_snapshot").notNull(),
-  quantity: integer().notNull(),
-  unitPriceCents: bigint("unit_price_cents", { mode: "number" }).notNull(),
-  purchasePriceSnapshotCents: bigint("purchase_price_snapshot_cents", {
-    mode: "number",
-  }).notNull(),
-  discountCents: bigint("discount_cents", { mode: "number" }).notNull(),
-  lineTotalCents: bigint("line_total_cents", { mode: "number" }).notNull(),
-  returnedQuantity: integer("returned_quantity").notNull().default(0),
-  createdAt: ts("created_at"),
-});
-export const stockMovements = pgTable("stock_movements", {
-  id: serial().primaryKey(),
-  productId: integer("product_id")
-    .notNull()
-    .references(() => products.id),
-  movementType: text("movement_type").notNull(),
-  quantityChange: integer("quantity_change").notNull(),
-  stockBefore: integer("stock_before").notNull(),
-  stockAfter: integer("stock_after").notNull(),
-  referenceType: text("reference_type"),
-  referenceId: integer("reference_id"),
-  reason: text().notNull(),
-  idempotencyKey: text("idempotency_key"),
-  createdBy: integer("created_by")
-    .notNull()
-    .references(() => users.id),
-  createdAt: ts("created_at"),
-},(t)=>[index("stock_movements_product_date_idx").on(t.productId,t.createdAt),index("stock_movements_worker_date_idx").on(t.createdBy,t.createdAt),index("stock_movements_type_date_idx").on(t.movementType,t.createdAt),uniqueIndex("stock_movements_idempotency_uq").on(t.idempotencyKey).where(sql`${t.idempotencyKey} is not null`)]);
+export const denominations = pgTable(
+  "cash_register_denominations",
+  {
+    id: serial().primaryKey(),
+    cashRegisterSessionId: integer("cash_register_session_id")
+      .notNull()
+      .references(() => registerSessions.id),
+    denominationCents: integer("denomination_cents").notNull(),
+    quantity: integer().notNull(),
+    totalCents: bigint("total_cents", { mode: "number" }).notNull(),
+    phase: text().notNull().default("closing"),
+  },
+  (t) => [
+    check(
+      "denomination_values_ck",
+      sql`${t.denominationCents} in (20000,10000,5000,2000,1000,500,200,100,50)`,
+    ),
+    check(
+      "denomination_quantity_ck",
+      sql`${t.quantity}>=0 and ${t.totalCents}=${t.denominationCents}*${t.quantity}`,
+    ),
+    check("denomination_phase_ck", sql`${t.phase} in ('opening','closing')`),
+    uniqueIndex("denomination_session_phase_value_uq").on(
+      t.cashRegisterSessionId,
+      t.phase,
+      t.denominationCents,
+    ),
+  ],
+);
+export const sales = pgTable(
+  "sales",
+  {
+    id: serial().primaryKey(),
+    saleNumber: text("sale_number").notNull().unique(),
+    customerId: integer("customer_id").references(() => customers.id),
+    cashierId: integer("cashier_id")
+      .notNull()
+      .references(() => users.id),
+    cashRegisterSessionId: integer("cash_register_session_id").references(
+      () => registerSessions.id,
+    ),
+    subtotalCents: bigint("subtotal_cents", { mode: "number" }).notNull(),
+    discountCents: bigint("discount_cents", { mode: "number" }).notNull(),
+    totalCents: bigint("total_cents", { mode: "number" }).notNull(),
+    cashPaidCents: bigint("cash_paid_cents", { mode: "number" }).notNull(),
+    creditAmountCents: bigint("credit_amount_cents", {
+      mode: "number",
+    }).notNull(),
+    changeCents: bigint("change_cents", { mode: "number" }).notNull(),
+    paymentType: text("payment_type").notNull(),
+    status: text().notNull(),
+    notes: text(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    createdAt: ts("created_at"),
+    updatedAt: ts("updated_at"),
+  },
+  (t) => [
+    uniqueIndex("sales_cashier_idempotency_uq").on(
+      t.cashierId,
+      t.idempotencyKey,
+    ),
+    index("sales_date_idx").on(t.createdAt),
+    index("sales_customer_date_idx").on(t.customerId, t.createdAt),
+    index("sales_cashier_date_idx").on(t.cashierId, t.createdAt),
+    check(
+      "sales_money_ck",
+      sql`${t.subtotalCents}>=0 and ${t.discountCents}>=0 and ${t.totalCents}>=0 and ${t.cashPaidCents}>=0 and ${t.creditAmountCents}>=0 and ${t.changeCents}>=0 and ${t.cashPaidCents}+${t.creditAmountCents}=${t.totalCents}`,
+    ),
+    check(
+      "sales_payment_ck",
+      sql`${t.paymentType} in ('cash','credit','partial')`,
+    ),
+  ],
+);
+export const saleItems = pgTable(
+  "sale_items",
+  {
+    id: serial().primaryKey(),
+    saleId: integer("sale_id")
+      .notNull()
+      .references(() => sales.id),
+    productId: integer("product_id")
+      .notNull()
+      .references(() => products.id),
+    productNameSnapshot: text("product_name_snapshot").notNull(),
+    skuSnapshot: text("sku_snapshot"),
+    barcodeSnapshot: text("barcode_snapshot"),
+    productTypeSnapshot: text("product_type_snapshot").notNull(),
+    quantity: integer().notNull(),
+    unitPriceCents: bigint("unit_price_cents", { mode: "number" }).notNull(),
+    purchasePriceSnapshotCents: bigint("purchase_price_snapshot_cents", {
+      mode: "number",
+    }).notNull(),
+    discountCents: bigint("discount_cents", { mode: "number" }).notNull(),
+    lineTotalCents: bigint("line_total_cents", { mode: "number" }).notNull(),
+    returnedQuantity: integer("returned_quantity").notNull().default(0),
+    createdAt: ts("created_at"),
+  },
+  (t) => [
+    index("sale_items_sale_idx").on(t.saleId),
+    index("sale_items_product_idx").on(t.productId),
+  ],
+);
+export const stockMovements = pgTable(
+  "stock_movements",
+  {
+    id: serial().primaryKey(),
+    productId: integer("product_id")
+      .notNull()
+      .references(() => products.id),
+    movementType: text("movement_type").notNull(),
+    quantityChange: integer("quantity_change").notNull(),
+    stockBefore: integer("stock_before").notNull(),
+    stockAfter: integer("stock_after").notNull(),
+    referenceType: text("reference_type"),
+    referenceId: integer("reference_id"),
+    reason: text().notNull(),
+    idempotencyKey: text("idempotency_key"),
+    createdBy: integer("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: ts("created_at"),
+  },
+  (t) => [
+    index("stock_movements_product_date_idx").on(t.productId, t.createdAt),
+    index("stock_movements_worker_date_idx").on(t.createdBy, t.createdAt),
+    index("stock_movements_type_date_idx").on(t.movementType, t.createdAt),
+    index("stock_movements_reference_idx").on(t.referenceType, t.referenceId),
+    uniqueIndex("stock_movements_idempotency_uq")
+      .on(t.idempotencyKey)
+      .where(sql`${t.idempotencyKey} is not null`),
+  ],
+);
 export const purchases = pgTable("purchases", {
   id: serial().primaryKey(),
   purchaseNumber: text("purchase_number").notNull().unique(),
@@ -398,21 +506,31 @@ export const auditLogs = pgTable(
   },
   (t) => [index("audit_date_idx").on(t.createdAt)],
 );
-export const cashMovements = pgTable("cash_movements", {
-  id: serial().primaryKey(),
-  cashRegisterSessionId: integer("cash_register_session_id")
-    .notNull()
-    .references(() => registerSessions.id),
-  movementType: text("movement_type").notNull(),
-  amountCents: bigint("amount_cents", { mode: "number" }).notNull(),
-  referenceType: text("reference_type"),
-  referenceId: integer("reference_id"),
-  reason: text(),
-  createdBy: integer("created_by")
-    .notNull()
-    .references(() => users.id),
-  createdAt: ts("created_at"),
-});
+export const cashMovements = pgTable(
+  "cash_movements",
+  {
+    id: serial().primaryKey(),
+    cashRegisterSessionId: integer("cash_register_session_id")
+      .notNull()
+      .references(() => registerSessions.id),
+    movementType: text("movement_type").notNull(),
+    amountCents: bigint("amount_cents", { mode: "number" }).notNull(),
+    referenceType: text("reference_type"),
+    referenceId: integer("reference_id"),
+    reason: text(),
+    createdBy: integer("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: ts("created_at"),
+  },
+  (t) => [
+    index("cash_movements_register_date_idx").on(
+      t.cashRegisterSessionId,
+      t.createdAt,
+    ),
+    index("cash_movements_reference_idx").on(t.referenceType, t.referenceId),
+  ],
+);
 export const customerCreditTransactions = pgTable(
   "customer_credit_transactions",
   {
@@ -423,15 +541,30 @@ export const customerCreditTransactions = pgTable(
     saleId: integer("sale_id").references(() => sales.id),
     transactionType: text("transaction_type").notNull(),
     amountCents: bigint("amount_cents", { mode: "number" }).notNull(),
+    balanceBeforeCents: bigint("balance_before_cents", { mode: "number" }),
     balanceAfterCents: bigint("balance_after_cents", {
       mode: "number",
     }).notNull(),
     notes: text(),
+    cashRegisterSessionId: integer("cash_register_session_id").references(
+      () => registerSessions.id,
+    ),
+    idempotencyKey: text("idempotency_key"),
     createdBy: integer("created_by")
       .notNull()
       .references(() => users.id),
     createdAt: ts("created_at"),
   },
+  (t) => [
+    index("customer_credit_customer_date_idx").on(t.customerId, t.createdAt),
+    uniqueIndex("customer_credit_worker_idempotency_uq")
+      .on(t.createdBy, t.idempotencyKey)
+      .where(sql`${t.idempotencyKey} is not null`),
+    check(
+      "customer_credit_balance_ck",
+      sql`${t.balanceAfterCents}>=0 and (${t.balanceBeforeCents} is null or ${t.balanceBeforeCents}>=0)`,
+    ),
+  ],
 );
 export const supplierPayments = pgTable("supplier_payments", {
   id: serial().primaryKey(),

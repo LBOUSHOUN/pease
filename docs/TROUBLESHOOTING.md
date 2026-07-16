@@ -15,3 +15,7 @@
 - Ancien contenu PWA en développement : recharger une fois. Le client de développement désinscrit automatiquement les service workers et supprime uniquement les caches Maktaba/Workbox connus.
 - Trop de tentatives de connexion : attendre la durée affichée ou la valeur `Retry-After`; ne pas contourner la limite en production.
 - Session expirée : la prochaine requête renvoie vers la connexion. Si cela boucle, contrôler l’origine, HTTPS et les attributs du cookie.
+
+# Phase 3
+
+Une vente comptant ou partielle et un règlement client exigent une caisse ouverte pour l’utilisateur courant. Une clôture avec écart exige un motif. En cas de conflit 409, recharger caisse, stock ou dette : l’opération concurrente gagnante est déjà validée et l’opération refusée n’a écrit aucune donnée.

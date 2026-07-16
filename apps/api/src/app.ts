@@ -20,6 +20,7 @@ import {
   requirePermission,
 } from "./auth.js";
 import { registerPhase2 } from "./phase2.js";
+import { registerPhase3 } from "./phase3.js";
 export async function buildApp() {
   const app = Fastify({
     logger: { level: config.LOG_LEVEL },
@@ -233,5 +234,6 @@ export async function buildApp() {
     async () => ({ online: true, message: "API connectée" }),
   );
   await registerPhase2(app);
+  await registerPhase3(app);
   return app;
 }

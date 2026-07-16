@@ -22,6 +22,20 @@
       "when": 1784204152696,
       "tag": "0002_sleepy_penance",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1784224022411,
+      "tag": "0003_aspiring_the_captain",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784224338437,
+      "tag": "0004_lucky_zemo",
+      "breakpoints": true
     }
   ]
 }

@@ -156,3 +156,125 @@ export const stockMovementFiltersSchema = paginationSchema.extend({
   startDate: z.string().date().optional(),
   endDate: z.string().date().optional(),
 });
+export const idempotencyKeySchema = z
+  .string()
+  .trim()
+  .min(8)
+  .max(100)
+  .regex(/^[A-Za-z0-9._:-]+$/);
+export const denominationSchema = z.object({
+  denominationCents: z.number().int(),
+  quantity: z.number().int().min(0),
+});
+export const denominationValues = [
+  20000, 10000, 5000, 2000, 1000, 500, 200, 100, 50,
+] as const;
+const denominations = z
+  .array(denominationSchema)
+  .max(9)
+  .superRefine((lines, ctx) => {
+    const seen = new Set<number>();
+    for (const [i, line] of lines.entries()) {
+      if (
+        !denominationValues.includes(
+          line.denominationCents as (typeof denominationValues)[number],
+        )
+      )
+        ctx.addIssue({
+          code: "custom",
+          message: "Coupure invalide",
+          path: [i, "denominationCents"],
+        });
+      if (seen.has(line.denominationCents))
+        ctx.addIssue({
+          code: "custom",
+          message: "Coupure dupliquée",
+          path: [i],
+        });
+      seen.add(line.denominationCents);
+    }
+  });
+export const registerOpenSchema = z.object({
+  openingCashCents: z.number().int().min(0),
+  denominations: denominations.optional(),
+  note: z.string().trim().max(500).optional().nullable(),
+  idempotencyKey: idempotencyKeySchema,
+});
+export const registerCloseSchema = z.object({
+  actualCashCents: z.number().int().min(0),
+  denominations,
+  differenceReason: z.string().trim().max(500).optional().nullable(),
+  note: z.string().trim().max(500).optional().nullable(),
+  idempotencyKey: idempotencyKeySchema,
+});
+const nullableContact = z
+  .string()
+  .trim()
+  .max(500)
+  .optional()
+  .nullable()
+  .transform((v) => v || null);
+export const customerCreateSchema = z.object({
+  name: z.string().trim().min(2).max(200),
+  phone: nullableContact,
+  email: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .email()
+    .optional()
+    .nullable()
+    .or(z.literal(""))
+    .transform((v) => v || null),
+  address: nullableContact,
+  notes: optionalText,
+  creditLimitCents: z.number().int().min(0).default(0),
+});
+export const customerUpdateSchema = customerCreateSchema
+  .partial()
+  .refine((v) => Object.keys(v).length > 0);
+export const customerFiltersSchema = paginationSchema.extend({
+  search: z.string().trim().max(200).default(""),
+  status: z.enum(["all", "active", "inactive"]).default("all"),
+  debtOnly: queryBoolean.default(false),
+  sort: z.enum(["name", "createdAt", "currentDebtCents"]).default("name"),
+  direction: z.enum(["asc", "desc"]).default("asc"),
+});
+export const debtPaymentSchema = z.object({
+  amountCents: z.number().int().positive(),
+  note: z.string().trim().max(500).optional().nullable(),
+  idempotencyKey: idempotencyKeySchema,
+});
+export const saleCartLineSchema = z.object({
+  productId: z.number().int().positive(),
+  quantity: z.number().int().positive().max(100000),
+});
+export const saleCreateSchema = z.object({
+  customerId: z.number().int().positive().optional().nullable(),
+  items: z.array(saleCartLineSchema).min(1).max(200),
+  paymentMode: z.enum(["cash", "credit", "partial"]),
+  cashPaidCents: z.number().int().min(0).default(0),
+  idempotencyKey: idempotencyKeySchema,
+  note: z.string().trim().max(1000).optional().nullable(),
+});
+export const salesFiltersSchema = paginationSchema.extend({
+  search: z.string().trim().max(200).default(""),
+  customerId: z.coerce.number().int().positive().optional(),
+  workerId: z.coerce.number().int().positive().optional(),
+  paymentMode: z.enum(["cash", "credit", "partial"]).optional(),
+  startDate: z.string().date().optional(),
+  endDate: z.string().date().optional(),
+  minAmountCents: z.coerce.number().int().min(0).optional(),
+  maxAmountCents: z.coerce.number().int().min(0).optional(),
+  sort: z.enum(["createdAt", "totalCents", "saleNumber"]).default("createdAt"),
+  direction: z.enum(["asc", "desc"]).default("desc"),
+});
+export const registerListFiltersSchema = paginationSchema.extend({
+  status: z.enum(["all", "open", "closed"]).default("all"),
+});
+export const registerMovementFiltersSchema = paginationSchema.extend({
+  sessionId: z.coerce.number().int().positive().optional(),
+  movementType: z.string().trim().max(50).optional(),
+  startDate: z.string().date().optional(),
+  endDate: z.string().date().optional(),
+});

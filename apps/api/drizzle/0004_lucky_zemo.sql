@@ -1,0 +1,13 @@
+CREATE INDEX "customers_name_idx" ON "customers" USING btree ("full_name");--> statement-breakpoint
+CREATE INDEX "customers_active_debt_idx" ON "customers" USING btree ("is_active","current_debt_cents");--> statement-breakpoint
+CREATE UNIQUE INDEX "denomination_session_phase_value_uq" ON "cash_register_denominations" USING btree ("cash_register_session_id","phase","denomination_cents");--> statement-breakpoint
+CREATE INDEX "stock_movements_reference_idx" ON "stock_movements" USING btree ("reference_type","reference_id");--> statement-breakpoint
+ALTER TABLE "customer_credit_transactions" ADD CONSTRAINT "customer_credit_balance_ck" CHECK ("customer_credit_transactions"."balance_after_cents">=0 and ("customer_credit_transactions"."balance_before_cents" is null or "customer_credit_transactions"."balance_before_cents">=0));--> statement-breakpoint
+ALTER TABLE "customers" ADD CONSTRAINT "customers_money_ck" CHECK ("customers"."credit_limit_cents">=0 and "customers"."current_debt_cents">=0);--> statement-breakpoint
+ALTER TABLE "cash_register_denominations" ADD CONSTRAINT "denomination_values_ck" CHECK ("cash_register_denominations"."denomination_cents" in (20000,10000,5000,2000,1000,500,200,100,50));--> statement-breakpoint
+ALTER TABLE "cash_register_denominations" ADD CONSTRAINT "denomination_quantity_ck" CHECK ("cash_register_denominations"."quantity">=0 and "cash_register_denominations"."total_cents"="cash_register_denominations"."denomination_cents"*"cash_register_denominations"."quantity");--> statement-breakpoint
+ALTER TABLE "cash_register_denominations" ADD CONSTRAINT "denomination_phase_ck" CHECK ("cash_register_denominations"."phase" in ('opening','closing'));--> statement-breakpoint
+ALTER TABLE "cash_register_sessions" ADD CONSTRAINT "register_money_ck" CHECK ("cash_register_sessions"."opening_amount_cents">=0 and ("cash_register_sessions"."actual_closing_cents" is null or "cash_register_sessions"."actual_closing_cents">=0));--> statement-breakpoint
+ALTER TABLE "cash_register_sessions" ADD CONSTRAINT "register_status_ck" CHECK ("cash_register_sessions"."status" in ('open','closed'));--> statement-breakpoint
+ALTER TABLE "sales" ADD CONSTRAINT "sales_money_ck" CHECK ("sales"."subtotal_cents">=0 and "sales"."discount_cents">=0 and "sales"."total_cents">=0 and "sales"."cash_paid_cents">=0 and "sales"."credit_amount_cents">=0 and "sales"."change_cents">=0 and "sales"."cash_paid_cents"+"sales"."credit_amount_cents"="sales"."total_cents");--> statement-breakpoint
+ALTER TABLE "sales" ADD CONSTRAINT "sales_payment_ck" CHECK ("sales"."payment_type" in ('cash','credit','partial'));

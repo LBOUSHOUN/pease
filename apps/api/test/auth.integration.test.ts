@@ -697,14 +697,12 @@ describe("online catalog and stock", () => {
     const session = await phase2Owner();
     const argon2 = (await import("argon2")).default,
       { users } = await import("../src/db/schema.js");
-    await database.db
-      .insert(users)
-      .values({
-        fullName: "Caissier",
-        username: "cash",
-        passwordHash: await argon2.hash("Secret123"),
-        role: "cashier",
-      });
+    await database.db.insert(users).values({
+      fullName: "Caissier",
+      username: "cash",
+      passwordHash: await argon2.hash("Secret123"),
+      role: "cashier",
+    });
     const login = await app.inject({
         method: "POST",
         url: "/api/auth/login",
@@ -781,5 +779,411 @@ describe("online catalog and stock", () => {
       expect(timings[url]).toBeLessThan(1000);
     }
     console.info("PHASE2_TIMINGS_MS", timings);
+  });
+});
+
+async function openRegister(sessionCookie: string, key = crypto.randomUUID()) {
+  return app.inject({
+    method: "POST",
+    url: "/api/register/open",
+    headers: { cookie: sessionCookie },
+    payload: {
+      openingCashCents: 20000,
+      denominations: [{ denominationCents: 20000, quantity: 1 }],
+      idempotencyKey: key,
+    },
+  });
+}
+async function phase3Product(sessionCookie: string, stock = 10) {
+  const cat = (await category(sessionCookie)).json(),
+    product = (
+      await app.inject({
+        method: "POST",
+        url: "/api/products",
+        headers: { cookie: sessionCookie },
+        payload: productBody(cat.id, { sellingPriceCents: 1250 }),
+      })
+    ).json();
+  if (stock)
+    await app.inject({
+      method: "POST",
+      url: "/api/stock/adjustments",
+      headers: { cookie: sessionCookie },
+      payload: {
+        productId: product.id,
+        movementType: "opening_stock",
+        quantity: stock,
+        reason: "Stock initial",
+      },
+    });
+  return product;
+}
+async function phase3Customer(sessionCookie: string) {
+  return (
+    await app.inject({
+      method: "POST",
+      url: "/api/customers",
+      headers: { cookie: sessionCookie },
+      payload: {
+        name: "Client Test",
+        phone: "06 12 34 56 78",
+        creditLimitCents: 100000,
+      },
+    })
+  ).json();
+}
+async function createSale(
+  sessionCookie: string,
+  productId: number,
+  overrides: Record<string, unknown> = {},
+) {
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/sales",
+    headers: { cookie: sessionCookie },
+    payload: {
+      items: [{ productId, quantity: 1 }],
+      paymentMode: "cash",
+      cashPaidCents: 0,
+      idempotencyKey: crypto.randomUUID(),
+      ...overrides,
+    },
+  });
+  return response;
+}
+
+describe("online register, customers, credit and sales", () => {
+  it("opens idempotently, validates denominations and closes with a reason", async () => {
+    const session = await phase2Owner(),
+      key = crypto.randomUUID();
+    expect((await openRegister(session, key)).statusCode).toBe(201);
+    expect((await openRegister(session, key)).json().duplicate).toBe(true);
+    expect((await openRegister(session)).statusCode).toBe(409);
+    const status = await app.inject({
+      url: "/api/register/status",
+      headers: { cookie: session },
+    });
+    expect(status.json().expectedCashCents).toBe(20000);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/register/close",
+          headers: { cookie: session },
+          payload: {
+            actualCashCents: 10000,
+            denominations: [{ denominationCents: 10000, quantity: 1 }],
+            idempotencyKey: crypto.randomUUID(),
+          },
+        })
+      ).statusCode,
+    ).toBe(400);
+    const closed = await app.inject({
+      method: "POST",
+      url: "/api/register/close",
+      headers: { cookie: session },
+      payload: {
+        actualCashCents: 10000,
+        denominations: [{ denominationCents: 10000, quantity: 1 }],
+        differenceReason: "Écart comptage",
+        idempotencyKey: crypto.randomUUID(),
+      },
+    });
+    expect(closed.statusCode).toBe(200);
+    expect(closed.json().differenceCents).toBe(-10000);
+  });
+
+  it("creates customers and records an atomic idempotent debt payment", async () => {
+    const session = await phase2Owner(),
+      product = await phase3Product(session),
+      customer = await phase3Customer(session);
+    const sale = await createSale(session, product.id, {
+      customerId: customer.id,
+      paymentMode: "credit",
+    });
+    expect(sale.statusCode).toBe(201);
+    expect(sale.json().creditAmountCents).toBe(1250);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/api/customers/${customer.id}/payments`,
+          headers: { cookie: session },
+          payload: { amountCents: 250, idempotencyKey: crypto.randomUUID() },
+        })
+      ).statusCode,
+    ).toBe(409);
+    await openRegister(session);
+    const key = crypto.randomUUID(),
+      payment = { amountCents: 250, note: "Espèces", idempotencyKey: key };
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/customers/${customer.id}/payments`,
+      headers: { cookie: session },
+      payload: payment,
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.json().remainingDebtCents).toBe(1000);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/api/customers/${customer.id}/payments`,
+          headers: { cookie: session },
+          payload: payment,
+        })
+      ).json().duplicate,
+    ).toBe(true);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/api/customers/${customer.id}/payments`,
+          headers: { cookie: session },
+          payload: { amountCents: 2000, idempotencyKey: crypto.randomUUID() },
+        })
+      ).statusCode,
+    ).toBe(409);
+  });
+
+  it("creates cash, credit, partial, service and mixed sales using server prices", async () => {
+    const session = await phase2Owner(),
+      product = await phase3Product(session, 10),
+      customer = await phase3Customer(session);
+    const cat = (
+      await app.inject({ url: "/api/categories", headers: { cookie: session } })
+    ).json().rows[0];
+    const service = (
+      await app.inject({
+        method: "POST",
+        url: "/api/products",
+        headers: { cookie: session },
+        payload: productBody(cat.id, {
+          name: "Photocopie",
+          productType: "service",
+          trackStock: false,
+          sku: null,
+          manufacturerBarcode: null,
+          sellingPriceCents: 200,
+        }),
+      })
+    ).json();
+    await openRegister(session);
+    expect((await createSale(session, product.id)).json().totalCents).toBe(
+      1250,
+    );
+    expect(
+      (
+        await createSale(session, service.id, {
+          customerId: customer.id,
+          paymentMode: "credit",
+        })
+      ).statusCode,
+    ).toBe(201);
+    const partial = await createSale(session, product.id, {
+      customerId: customer.id,
+      paymentMode: "partial",
+      cashPaidCents: 500,
+      items: [
+        { productId: product.id, quantity: 1 },
+        { productId: service.id, quantity: 2 },
+      ],
+    });
+    expect(partial.json()).toMatchObject({
+      totalCents: 1650,
+      cashPaidCents: 500,
+      creditAmountCents: 1150,
+    });
+    const detail = await app.inject({
+      url: `/api/sales/${partial.json().id}`,
+      headers: { cookie: session },
+    });
+    expect(detail.json().items).toHaveLength(2);
+  });
+
+  it("returns one sale for concurrent duplicate submissions", async () => {
+    const session = await phase2Owner(),
+      product = await phase3Product(session, 2),
+      key = crypto.randomUUID();
+    await openRegister(session);
+    const responses = await Promise.all([
+      createSale(session, product.id, { idempotencyKey: key }),
+      createSale(session, product.id, { idempotencyKey: key }),
+    ]);
+    expect(
+      responses.filter((x) => x.statusCode === 201 || x.statusCode === 200),
+    ).toHaveLength(2);
+    const count =
+      await database.sql`select count(*)::int count from sales where idempotency_key=${key}`;
+    expect(count[0]!.count).toBe(1);
+  });
+
+  it("allows only one concurrent sale of the last stock unit", async () => {
+    const session = await phase2Owner(),
+      product = await phase3Product(session, 1);
+    await openRegister(session);
+    const responses = await Promise.all([
+      createSale(session, product.id),
+      createSale(session, product.id),
+    ]);
+    expect(responses.map((x) => x.statusCode).sort()).toEqual([201, 409]);
+    const [row] =
+      await database.sql`select current_stock from products where id=${product.id}`;
+    expect(row!.current_stock).toBe(0);
+  });
+
+  it("keeps concurrent customer credit updates consistent", async () => {
+    const session = await phase2Owner(),
+      product = await phase3Product(session, 4),
+      customer = await phase3Customer(session);
+    const responses = await Promise.all([
+      createSale(session, product.id, {
+        customerId: customer.id,
+        paymentMode: "credit",
+      }),
+      createSale(session, product.id, {
+        customerId: customer.id,
+        paymentMode: "credit",
+      }),
+    ]);
+    expect(responses.every((x) => x.statusCode === 201)).toBe(true);
+    const [row] =
+      await database.sql`select current_debt_cents from customers where id=${customer.id}`;
+    expect(Number(row!.current_debt_cents)).toBe(2500);
+  });
+
+  it("serializes concurrent debt payments without a negative balance", async () => {
+    const session = await phase2Owner(),
+      product = await phase3Product(session, 2),
+      customer = await phase3Customer(session);
+    await createSale(session, product.id, {
+      customerId: customer.id,
+      paymentMode: "credit",
+    });
+    await openRegister(session);
+    const pay = () =>
+      app.inject({
+        method: "POST",
+        url: `/api/customers/${customer.id}/payments`,
+        headers: { cookie: session },
+        payload: { amountCents: 1000, idempotencyKey: crypto.randomUUID() },
+      });
+    const responses = await Promise.all([pay(), pay()]);
+    expect(responses.map((x) => x.statusCode).sort()).toEqual([200, 409]);
+    const [row] =
+      await database.sql`select current_debt_cents from customers where id=${customer.id}`;
+    expect(Number(row!.current_debt_cents)).toBe(250);
+  });
+
+  it("keeps sale-versus-adjustment and sale-versus-close outcomes consistent", async () => {
+    const session = await phase2Owner(),
+      product = await phase3Product(session, 1);
+    await openRegister(session);
+    const adjustment = app.inject({
+      method: "POST",
+      url: "/api/stock/adjustments",
+      headers: { cookie: session },
+      payload: {
+        productId: product.id,
+        movementType: "stock_out",
+        quantity: 1,
+        reason: "Sortie concurrente",
+      },
+    });
+    const [sale, stock] = await Promise.all([
+      createSale(session, product.id),
+      adjustment,
+    ]);
+    expect(
+      [sale.statusCode, stock.statusCode].filter((code) => code < 300),
+    ).toHaveLength(1);
+    const [row] =
+      await database.sql`select current_stock from products where id=${product.id}`;
+    expect(Number(row!.current_stock)).toBe(0);
+    await app.inject({
+      method: "POST",
+      url: "/api/stock/adjustments",
+      headers: { cookie: session },
+      payload: {
+        productId: product.id,
+        movementType: "stock_in",
+        quantity: 1,
+        reason: "Préparation concurrence",
+      },
+    });
+    const close = app.inject({
+      method: "POST",
+      url: "/api/register/close",
+      headers: { cookie: session },
+      payload: {
+        actualCashCents: 20000,
+        denominations: [{ denominationCents: 20000, quantity: 1 }],
+        differenceReason: "Test concurrent",
+        idempotencyKey: crypto.randomUUID(),
+      },
+    });
+    const secondSale = createSale(session, product.id);
+    const outcomes = await Promise.all([close, secondSale]);
+    expect(outcomes[0]!.statusCode).toBe(200);
+    expect([200, 201, 409]).toContain(outcomes[1]!.statusCode);
+    expect(
+      (
+        await app.inject({
+          url: "/api/register/status",
+          headers: { cookie: session },
+        })
+      ).json().isOpen,
+    ).toBe(false);
+  });
+  it("keeps paginated Phase 3 reads responsive", async () => {
+    const session = await phase2Owner(),
+      product = await phase3Product(session, 2),
+      customer = await phase3Customer(session);
+    await openRegister(session);
+    await createSale(session, product.id, {
+      customerId: customer.id,
+      paymentMode: "partial",
+      cashPaidCents: 500,
+    });
+    const urls = [
+        "/api/register/status",
+        "/api/customers",
+        "/api/sales",
+        "/api/register/movements",
+      ],
+      timings: Record<string, number> = {};
+    for (const url of urls) {
+      const samples: number[] = [];
+      for (let index = 0; index < 5; index++) {
+        const start = performance.now(),
+          response = await app.inject({ url, headers: { cookie: session } });
+        samples.push(performance.now() - start);
+        expect(response.statusCode).toBe(200);
+      }
+      samples.sort((a, b) => a - b);
+      timings[url] = Number(samples[2]!.toFixed(2));
+      expect(timings[url]).toBeLessThan(1000);
+    }
+    console.info("PHASE3_TIMINGS_MS", timings);
+  });
+  it("rejects Phase 3 operations for a stock-only role", async () => {
+    await phase2Owner();
+    const argon2 = (await import("argon2")).default;
+    await database.sql`insert into users(full_name,username,password_hash,role) values('Stock','stock3',${await argon2.hash("Secret123")},'stock_worker')`;
+    const login = await app.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { login: "stock3", password: "Secret123" },
+      }),
+      restricted = cookie(login);
+    for (const value of [
+      { method: "GET" as const, url: "/api/customers" },
+      { method: "GET" as const, url: "/api/register/status" },
+      { method: "POST" as const, url: "/api/sales", payload: {} },
+    ])
+      expect(
+        (await app.inject({ ...value, headers: { cookie: restricted } }))
+          .statusCode,
+      ).toBe(403);
   });
 });

@@ -10,4 +10,4 @@ L’API utilise un pool PostgreSQL unique, borné à dix connexions. Les index c
 
 Le tableau de bord et l’enregistrement PWA sont chargés dynamiquement. Aucun service worker n’est enregistré en développement; les anciens caches Maktaba/Workbox sont nettoyés sans toucher aux autres caches. En production, les routes `/api` utilisent `NetworkOnly` et ne servent jamais de données métier depuis un cache.
 
-Les futurs flux financiers utiliseront des transactions PostgreSQL, `SELECT … FOR UPDATE`, contraintes uniques d’idempotence et mises à jour atomiques du stock. Aucun verrou frontend n’est considéré comme une garantie.
+La Phase 3 applique transactions PostgreSQL, `SELECT … FOR UPDATE`, ordre déterministe des produits, verrous consultatifs par caissier, contraintes uniques d’idempotence et mises à jour atomiques du stock, de la caisse et de la dette. Aucun verrou frontend n’est considéré comme une garantie. Les écrans Phase 3 sont un chunk asynchrone séparé.
