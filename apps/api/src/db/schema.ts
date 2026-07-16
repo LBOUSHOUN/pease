@@ -53,6 +53,7 @@ export const users = pgTable(
     uniqueIndex("users_email_uq")
       .on(sql`lower(${t.email})`)
       .where(sql`${t.email} is not null`),
+    index("users_active_idx").on(t.isActive),
     check(
       "users_role_ck",
       sql`${t.role} in ('global_admin','manager','cashier','stock_worker')`,
@@ -75,6 +76,7 @@ export const sessions = pgTable(
   (t) => [
     index("sessions_user_idx").on(t.userId),
     index("sessions_token_idx").on(t.tokenHash),
+    index("sessions_expiry_idx").on(t.expiresAt),
   ],
 );
 export const categories = pgTable("categories", {

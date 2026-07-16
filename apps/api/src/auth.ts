@@ -43,18 +43,21 @@ export async function revoke(req: FastifyRequest, reply: FastifyReply) {
       .update(sessions)
       .set({ revokedAt: new Date() })
       .where(eq(sessions.tokenHash, hash(token)));
-  reply.clearCookie(cookie, { path: "/" });
+  reply.clearCookie(cookie, {
+    httpOnly: true,
+    secure: config.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+  });
 }
 export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
   const token = req.cookies[cookie];
   if (!token)
-    return reply
-      .code(401)
-      .send({
-        code: "UNAUTHENTICATED",
-        message: "Veuillez vous connecter",
-        requestId: req.id,
-      });
+    return reply.code(401).send({
+      code: "UNAUTHENTICATED",
+      message: "Veuillez vous connecter",
+      requestId: req.id,
+    });
   const rows = await db
     .select({ session: sessions, user: users })
     .from(sessions)
@@ -70,13 +73,11 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
     .limit(1);
   const row = rows[0];
   if (!row)
-    return reply
-      .code(401)
-      .send({
-        code: "SESSION_INVALID",
-        message: "Session expirée",
-        requestId: req.id,
-      });
+    return reply.code(401).send({
+      code: "SESSION_INVALID",
+      message: "Session expirée",
+      requestId: req.id,
+    });
   req.user = safeUser(row.user);
 }
 export function requirePermission(permission: string) {
@@ -84,21 +85,17 @@ export function requirePermission(permission: string) {
     await authenticate(req, reply);
     if (reply.sent) return;
     if (req.user?.mustChangePassword)
-      return reply
-        .code(403)
-        .send({
-          code: "PASSWORD_CHANGE_REQUIRED",
-          message: "Changez votre mot de passe",
-          requestId: req.id,
-        });
+      return reply.code(403).send({
+        code: "PASSWORD_CHANGE_REQUIRED",
+        message: "Changez votre mot de passe",
+        requestId: req.id,
+      });
     if (!req.user?.permissions.includes(permission))
-      return reply
-        .code(403)
-        .send({
-          code: "FORBIDDEN",
-          message: "Autorisation insuffisante",
-          requestId: req.id,
-        });
+      return reply.code(403).send({
+        code: "FORBIDDEN",
+        message: "Autorisation insuffisante",
+        requestId: req.id,
+      });
   };
 }
 declare module "fastify" {

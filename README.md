@@ -63,4 +63,4 @@ npm run db:migrate
 npm run dev
 ```
 
-Le web répond sur `http://localhost:5173` et l’API sur `http://127.0.0.1:4000`. Cette phase fournit onboarding, authentification, session opaque et tableau de bord protégé. Les modules métier en ligne ne sont pas encore portés. Voir `docs/OFFLINE_ONLINE_BOUNDARY.md`.
+Le web répond sur `http://localhost:5173` et l’API sur `http://127.0.0.1:3000`. La configuration API est chargée depuis `apps/api/.env` (les variables d’environnement du processus restent prioritaires), y compris lorsque les migrations sont lancées depuis la racine. Cette phase fournit onboarding, authentification, session opaque et tableau de bord protégé. Les modules métier en ligne ne sont pas encore portés. Voir `docs/OFFLINE_ONLINE_BOUNDARY.md` et `docs/ONLINE_PERFORMANCE.md`.

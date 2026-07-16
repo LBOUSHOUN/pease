@@ -5,12 +5,13 @@
 | Module | État | Vérification |
 |---|---|---|
 | Workspace npm séparé | complet | typecheck/build réussis |
-| Schéma PostgreSQL Drizzle (22 tables) | complet | migration générée, application bloquée par Docker arrêté |
-| Onboarding propriétaire API | complet | compilation; test PostgreSQL restant |
-| Sessions opaques/Argon2/cookies | complet | compilation; intégration PostgreSQL restante |
-| Web responsive et changement forcé | complet | build testé |
-| PWA statique | complet | manifeste et service worker générés |
-| Docker/Caddy | configuration complète | moteur Docker local indisponible |
+| Schéma PostgreSQL Drizzle (22 tables) | complet | migrations générées et appliquées sur PostgreSQL Docker |
+| Onboarding propriétaire API | complet | tests d’intégration PostgreSQL, normalisation et concurrence |
+| Sessions opaques/Argon2/cookies | complet | login, persistance, révocation, inactivité et rate limit testés |
+| Web responsive et changement forcé | complet | build et tests frontend réussis |
+| PWA statique | complet | production uniquement; API explicitement hors cache |
+| Stabilisation/performance en ligne | complet | 23 tests, typecheck, lint, build et profil navigateur réussis |
+| Docker/Caddy | configuration complète | PostgreSQL de développement validé; déploiement VPS restant |
 | Modules métier en ligne | manquants | restent sur desktop uniquement |
 
 Il n’existe aucune synchronisation offline/online. Le déploiement VPS n’a pas été effectué.

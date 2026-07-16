@@ -1,4 +1,12 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import {
+  FormEvent,
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   BrowserRouter,
   NavLink,
@@ -7,31 +15,34 @@ import {
   useLocation,
 } from "react-router-dom";
 import type { SafeUser } from "@maktaba/shared-types";
-import { request, AuthResponse } from "./api";
+import { request, AuthResponse, ApiFailure } from "./api";
+import { initializeAuth, resetAuthInitialization } from "./auth-bootstrap";
+import { singleFlight } from "./single-flight";
+const Dashboard = lazy(() => import("./Dashboard"));
 function field(f: FormData, n: string) {
   return String(f.get(n) ?? "");
 }
 export default function App() {
   const [user, setUser] = useState<SafeUser | null | undefined>(),
     [needsOwner, setNeedsOwner] = useState(false),
-    [offline, setOffline] = useState(!navigator.onLine);
+    [offline, setOffline] = useState(!navigator.onLine),
+    [loggingOut, setLoggingOut] = useState(false),
+    [logoutError, setLogoutError] = useState("");
+  const logoutAction = useRef<() => Promise<void>>(undefined);
   const refresh = useCallback(async () => {
     try {
-      const b = (await fetch("/api/bootstrap/status").then((r) =>
-        r.json(),
-      )) as { needsOnboarding: boolean };
-      setNeedsOwner(b.needsOnboarding);
-      if (!b.needsOnboarding) {
-        try {
-          setUser((await request<AuthResponse>("/auth/me")).user);
-        } catch {
-          setUser(null);
-        }
-      } else setUser(null);
+      const result = await initializeAuth();
+      setNeedsOwner(result.needsOwner);
+      setUser(result.user);
       setOffline(false);
-    } catch {
-      setOffline(true);
-      setUser(null);
+    } catch (error) {
+      if (error instanceof ApiFailure && error.status === 401) {
+        setOffline(false);
+        setUser(null);
+      } else {
+        setOffline(true);
+        setUser(null);
+      }
     }
   }, []);
   useEffect(() => {
@@ -40,14 +51,42 @@ export default function App() {
       off = () => setOffline(true);
     window.addEventListener("online", online);
     window.addEventListener("offline", off);
+    const expired = () => {
+      resetAuthInitialization();
+      setUser(null);
+    };
+    window.addEventListener("session-expired", expired);
     return () => {
       window.removeEventListener("online", online);
       window.removeEventListener("offline", off);
+      window.removeEventListener("session-expired", expired);
     };
   }, [refresh]);
   if (user === undefined)
     return <div className="center">Initialisation sécurisée…</div>;
-  if (offline) return <Offline retry={refresh} />;
+  const retry = () => {
+    resetAuthInitialization();
+    setUser(undefined);
+    void refresh();
+  };
+  logoutAction.current ??= singleFlight(async () => {
+    setLoggingOut(true);
+    setLogoutError("");
+    try {
+      await request<void>("/auth/logout", { method: "POST" });
+      resetAuthInitialization();
+      window.history.replaceState({}, "", "/login");
+      setUser(null);
+    } catch (error) {
+      setLogoutError(
+        error instanceof Error ? error.message : "Déconnexion impossible.",
+      );
+    } finally {
+      setLoggingOut(false);
+    }
+  });
+  const logout = () => logoutAction.current!();
+  if (offline) return <Offline retry={retry} />;
   if (needsOwner)
     return (
       <Onboarding
@@ -57,26 +96,32 @@ export default function App() {
         }}
       />
     );
-  if (!user) return <Login done={setUser} />;
+  if (!user)
+    return (
+      <Login
+        done={(value) => {
+          window.history.replaceState({}, "", "/");
+          setUser(value);
+        }}
+      />
+    );
   if (user.mustChangePassword)
     return (
       <Password
         user={user}
         done={setUser}
-        logout={async () => {
-          await request("/auth/logout", { method: "POST" });
-          setUser(null);
-        }}
+        logout={logout}
+        loggingOut={loggingOut}
+        logoutError={logoutError}
       />
     );
   return (
     <BrowserRouter>
       <Layout
         user={user}
-        logout={async () => {
-          await request("/auth/logout", { method: "POST" });
-          setUser(null);
-        }}
+        logout={logout}
+        loggingOut={loggingOut}
+        logoutError={logoutError}
       />
     </BrowserRouter>
   );
@@ -114,14 +159,14 @@ function Onboarding({ done }: { done: (u: SafeUser) => void }) {
     try {
       const x = await request<AuthResponse>("/bootstrap/owner", {
         method: "POST",
-        body: JSON.stringify({
+        json: {
           shopName: field(f, "shop"),
           fullName: field(f, "name"),
           username: field(f, "username"),
           email: field(f, "email"),
           password: field(f, "password"),
           barcodePrefix: field(f, "prefix"),
-        }),
+        },
       });
       done(x.user);
     } catch (x) {
@@ -158,25 +203,42 @@ function Onboarding({ done }: { done: (u: SafeUser) => void }) {
 }
 function Login({ done }: { done: (u: SafeUser) => void }) {
   const [error, setError] = useState(""),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [blockedUntil, setBlockedUntil] = useState(0),
+    [clock, setClock] = useState(Date.now());
+  useEffect(() => {
+    if (!blockedUntil) return;
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setClock(now);
+      if (now >= blockedUntil) setBlockedUntil(0);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [blockedUntil]);
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (busy || Date.now() < blockedUntil) return;
     const f = new FormData(e.currentTarget);
     setBusy(true);
+    setError("");
     try {
       done(
         (
           await request<AuthResponse>("/auth/login", {
             method: "POST",
-            body: JSON.stringify({
+            json: {
               login: field(f, "login"),
               password: field(f, "password"),
-            }),
+            },
           })
         ).user,
       );
     } catch (x) {
       setError(x instanceof Error ? x.message : "Connexion impossible");
+      const password = e.currentTarget.elements.namedItem("password");
+      if (password instanceof HTMLInputElement) password.value = "";
+      if (x instanceof ApiFailure && x.status === 429)
+        setBlockedUntil(Date.now() + (x.retryAfterSeconds ?? 60) * 1000);
     } finally {
       setBusy(false);
     }
@@ -184,14 +246,30 @@ function Login({ done }: { done: (u: SafeUser) => void }) {
   return (
     <FormShell title="Connexion" error={error}>
       <form onSubmit={submit}>
-        <input name="login" placeholder="Identifiant ou e-mail" required />
+        <label>
+          Identifiant ou e-mail
+          <input name="login" autoComplete="username" autoFocus required />
+        </label>
         <input
           name="password"
           type="password"
-          placeholder="Mot de passe"
+          aria-label="Mot de passe"
+          autoComplete="current-password"
           required
         />
-        <button disabled={busy}>Se connecter</button>
+        <button disabled={busy || Date.now() < blockedUntil} aria-busy={busy}>
+          {busy
+            ? "Connexion…"
+            : Date.now() < blockedUntil
+              ? "Veuillez patienter…"
+              : "Se connecter"}
+        </button>
+        {blockedUntil > clock && (
+          <small role="status">
+            Réessayez dans {Math.ceil((blockedUntil - clock) / 1000)}{" "}
+            seconde(s).
+          </small>
+        )}
       </form>
     </FormShell>
   );
@@ -200,10 +278,14 @@ function Password({
   user,
   done,
   logout,
+  loggingOut,
+  logoutError,
 }: {
   user: SafeUser;
   done: (u: SafeUser) => void;
   logout: () => void;
+  loggingOut: boolean;
+  logoutError: string;
 }) {
   const [error, setError] = useState("");
   const submit = async (e: FormEvent<HTMLFormElement>) => {
@@ -216,10 +298,10 @@ function Password({
         (
           await request<AuthResponse>("/auth/change-password", {
             method: "POST",
-            body: JSON.stringify({
+            json: {
               currentPassword: field(f, "current"),
               newPassword: field(f, "new"),
-            }),
+            },
           })
         ).user,
       );
@@ -229,6 +311,11 @@ function Password({
   };
   return (
     <FormShell title="Changer le mot de passe" error={error}>
+      {logoutError && (
+        <div className="error" role="alert">
+          {logoutError}
+        </div>
+      )}
       <p>Bonjour {user.fullName}. Définissez votre mot de passe personnel.</p>
       <form onSubmit={submit}>
         <input
@@ -250,14 +337,29 @@ function Password({
           required
         />
         <button>Continuer</button>
-        <button type="button" className="secondary" onClick={logout}>
-          Déconnexion
+        <button
+          type="button"
+          className="secondary"
+          onClick={logout}
+          disabled={loggingOut}
+        >
+          {loggingOut ? "Déconnexion…" : "Déconnexion"}
         </button>
       </form>
     </FormShell>
   );
 }
-function Layout({ user, logout }: { user: SafeUser; logout: () => void }) {
+function Layout({
+  user,
+  logout,
+  loggingOut,
+  logoutError,
+}: {
+  user: SafeUser;
+  logout: () => void;
+  loggingOut: boolean;
+  logoutError: string;
+}) {
   const [menu, setMenu] = useState(false),
     loc = useLocation();
   useEffect(() => setMenu(false), [loc]);
@@ -271,9 +373,12 @@ function Layout({ user, logout }: { user: SafeUser; logout: () => void }) {
           <NavLink to="/">Tableau de bord</NavLink>
         </nav>
         <footer>
+          {logoutError && <small role="alert">{logoutError}</small>}
           <b>{user.fullName}</b>
           <small>{user.role}</small>
-          <button onClick={logout}>Déconnexion</button>
+          <button onClick={logout} disabled={loggingOut} aria-busy={loggingOut}>
+            {loggingOut ? "Déconnexion…" : "Déconnexion"}
+          </button>
         </footer>
       </aside>
       <div className="main">
@@ -282,35 +387,19 @@ function Layout({ user, logout }: { user: SafeUser; logout: () => void }) {
           <span>Connexion sécurisée</span>
         </header>
         <Routes>
-          <Route path="/" element={<Dashboard />} />
+          <Route
+            path="/"
+            element={
+              <Suspense fallback={<main className="page">Chargement…</main>}>
+                <Dashboard />
+              </Suspense>
+            }
+          />
           <Route path="/forbidden" element={<State title="Accès interdit" />} />
           <Route path="*" element={<State title="Page introuvable" />} />
         </Routes>
       </div>
     </div>
-  );
-}
-function Dashboard() {
-  const [data, setData] = useState<{ message: string } | null>(null),
-    [error, setError] = useState("");
-  useEffect(() => {
-    void request<{ message: string }>("/dashboard")
-      .then(setData)
-      .catch((e) => setError(e.message));
-  }, []);
-  return (
-    <main className="page">
-      <h1>Tableau de bord</h1>
-      <p>
-        Fondation de la version en ligne. Aucun module métier n’est encore
-        activé.
-      </p>
-      {error ? (
-        <div className="error">{error}</div>
-      ) : (
-        <div className="card">{data?.message ?? "Chargement…"}</div>
-      )}
-    </main>
   );
 }
 function Offline({ retry }: { retry: () => void }) {

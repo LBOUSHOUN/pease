@@ -8,6 +8,13 @@
       "when": 1784200532848,
       "tag": "0000_rainy_cloak",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784202567973,
+      "tag": "0001_omniscient_medusa",
+      "breakpoints": true
     }
   ]
 }

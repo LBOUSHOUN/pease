@@ -1,4 +1,4 @@
-import Fastify from "fastify";
+import Fastify, { LogController } from "fastify";
 import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
@@ -23,19 +23,40 @@ export async function buildApp() {
   const app = Fastify({
     logger: { level: config.LOG_LEVEL },
     trustProxy: config.TRUST_PROXY === "true",
+    logController: new LogController({
+      disableRequestLogging: config.NODE_ENV === "test",
+    }),
   });
   await app.register(cookie);
   await app.register(helmet);
   await app.register(rateLimit, { global: false });
   app.setErrorHandler((e, req, reply) => {
-    req.log.error(e);
-    reply
-      .code((e as { statusCode?: number }).statusCode ?? 500)
-      .send({
-        code: "INTERNAL_ERROR",
-        message: "Une erreur interne est survenue",
-        requestId: req.id,
-      });
+    const status = (e as { statusCode?: number }).statusCode ?? 500;
+    if (status >= 500)
+      req.log.error({ err: e, requestId: req.id }, "request failed");
+    const normalized =
+      status === 429
+        ? {
+            code: "RATE_LIMITED",
+            message: "Trop de tentatives. Réessayez dans quelques minutes.",
+          }
+        : status === 409
+          ? {
+              code: "CONFLICT",
+              message:
+                "Cette opération entre en conflit avec les données actuelles.",
+            }
+          : status === 400
+            ? {
+                code: "VALIDATION_ERROR",
+                message: "Vérifiez les informations saisies.",
+              }
+            : {
+                code: "INTERNAL_ERROR",
+                message:
+                  "Une erreur interne est survenue. Réessayez plus tard.",
+              };
+    reply.code(status).send({ ...normalized, requestId: req.id });
   });
   app.get("/health", async () => ({ status: "ok" }));
   app.get("/ready", async (_req, reply) => {
@@ -60,14 +81,12 @@ export async function buildApp() {
     async (req, reply) => {
       const parsed = ownerSchema.safeParse(req.body);
       if (!parsed.success)
-        return reply
-          .code(400)
-          .send({
-            code: "VALIDATION_ERROR",
-            message: "Données invalides",
-            fieldErrors: parsed.error.flatten().fieldErrors,
-            requestId: req.id,
-          });
+        return reply.code(400).send({
+          code: "VALIDATION_ERROR",
+          message: "Données invalides",
+          fieldErrors: parsed.error.flatten().fieldErrors,
+          requestId: req.id,
+        });
       const x = parsed.data;
       let created: typeof users.$inferSelect | undefined;
       await db.transaction(async (tx) => {
@@ -84,13 +103,11 @@ export async function buildApp() {
           throw Object.assign(new Error("Bootstrap fermé"), {
             statusCode: 409,
           });
-        await tx
-          .insert(appSettings)
-          .values({
-            id: 1,
-            shopName: x.shopName,
-            barcodePrefix: x.barcodePrefix.toUpperCase(),
-          });
+        await tx.insert(appSettings).values({
+          id: 1,
+          shopName: x.shopName,
+          barcodePrefix: x.barcodePrefix.toUpperCase(),
+        });
         [created] = await tx
           .insert(users)
           .values({
@@ -101,14 +118,12 @@ export async function buildApp() {
             role: "global_admin",
           })
           .returning();
-        await tx
-          .insert(auditLogs)
-          .values({
-            userId: created!.id,
-            action: "owner.created",
-            entityType: "user",
-            entityId: created!.id,
-          });
+        await tx.insert(auditLogs).values({
+          userId: created!.id,
+          action: "owner.created",
+          entityType: "user",
+          entityId: created!.id,
+        });
       });
       await createSession(created!.id, reply);
       return reply.code(201).send({ user: safeUser(created!) });
@@ -116,32 +131,42 @@ export async function buildApp() {
   );
   app.post(
     "/api/auth/login",
-    { config: { rateLimit: { max: 8, timeWindow: "5 minutes" } } },
+    {
+      config: {
+        rateLimit: { max: config.LOGIN_RATE_LIMIT, timeWindow: "5 minutes" },
+      },
+    },
     async (req, reply) => {
       const p = loginSchema.safeParse(req.body);
       if (!p.success)
-        return reply
-          .code(400)
-          .send({ code: "VALIDATION_ERROR", message: "Données invalides" });
+        return reply.code(400).send({
+          code: "VALIDATION_ERROR",
+          message: "Vérifiez les informations saisies.",
+          requestId: req.id,
+        });
       const found = await db
         .select()
         .from(users)
         .where(
-          or(eq(users.username, p.data.login), eq(users.email, p.data.login)),
+          or(
+            dsql`lower(${users.username}) = ${p.data.login}`,
+            dsql`lower(${users.email}) = ${p.data.login}`,
+          ),
         )
         .limit(1);
       const u = found[0];
       if (!u || !(await argon2.verify(u.passwordHash, p.data.password)))
-        return reply
-          .code(401)
-          .send({
-            code: "BAD_CREDENTIALS",
-            message: "Identifiants incorrects",
-          });
+        return reply.code(401).send({
+          code: "BAD_CREDENTIALS",
+          message: "Identifiant ou mot de passe incorrect.",
+          requestId: req.id,
+        });
       if (!u.isActive)
-        return reply
-          .code(403)
-          .send({ code: "INACTIVE_USER", message: "Compte désactivé" });
+        return reply.code(403).send({
+          code: "INACTIVE_USER",
+          message: "Compte désactivé",
+          requestId: req.id,
+        });
       await db
         .update(users)
         .set({ lastLoginAt: new Date() })
@@ -163,12 +188,10 @@ export async function buildApp() {
     async (req, reply) => {
       const p = changePasswordSchema.safeParse(req.body);
       if (!p.success)
-        return reply
-          .code(400)
-          .send({
-            code: "VALIDATION_ERROR",
-            message: "Mot de passe trop faible",
-          });
+        return reply.code(400).send({
+          code: "VALIDATION_ERROR",
+          message: "Mot de passe trop faible",
+        });
       const found = await db
           .select()
           .from(users)
@@ -176,19 +199,15 @@ export async function buildApp() {
           .limit(1),
         u = found[0]!;
       if (!(await argon2.verify(u.passwordHash, p.data.currentPassword)))
-        return reply
-          .code(400)
-          .send({
-            code: "WRONG_PASSWORD",
-            message: "Mot de passe actuel incorrect",
-          });
+        return reply.code(400).send({
+          code: "WRONG_PASSWORD",
+          message: "Mot de passe actuel incorrect",
+        });
       if (await argon2.verify(u.passwordHash, p.data.newPassword))
-        return reply
-          .code(400)
-          .send({
-            code: "SAME_PASSWORD",
-            message: "Choisissez un mot de passe différent",
-          });
+        return reply.code(400).send({
+          code: "SAME_PASSWORD",
+          message: "Choisissez un mot de passe différent",
+        });
       u.mustChangePassword = false;
       await db
         .update(users)
@@ -198,14 +217,12 @@ export async function buildApp() {
           updatedAt: new Date(),
         })
         .where(eq(users.id, u.id));
-      await db
-        .insert(auditLogs)
-        .values({
-          userId: u.id,
-          action: "password.changed",
-          entityType: "user",
-          entityId: u.id,
-        });
+      await db.insert(auditLogs).values({
+        userId: u.id,
+        action: "password.changed",
+        entityType: "user",
+        entityId: u.id,
+      });
       return { user: safeUser(u) };
     },
   );
