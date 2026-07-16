@@ -1,5 +1,7 @@
 # Maktaba POS
 
+> Le dépôt contient désormais deux architectures distinctes. `apps/desktop` est la version hors ligne SQLite existante. `apps/api` et `apps/web` sont la fondation PostgreSQL en ligne. Il n’existe aucune synchronisation : ne faites jamais accepter des ventes de production aux deux systèmes simultanément.
+
 Application de caisse locale pour papeterie/librairie marocaine, construite avec Tauri 2, Rust, React, TypeScript et SQLite. La base, l’authentification et les opérations de caisse fonctionnent sans réseau.
 
 ## Fonctionnalités disponibles
@@ -50,3 +52,15 @@ Les sauvegardes se créent depuis l’écran **Sauvegarde**. Elles font un check
 Pour produire ultérieurement les installateurs : `npm run tauri -- build`. Cette commande n’est volontairement pas exécutée pendant le développement incomplet.
 
 En cas de problème : vérifier WebView2, l’espace disque, les droits du dossier `%APPDATA%`, puis exécuter `npm run typecheck` et `cargo test` séparément.
+
+## Fondation en ligne
+
+```powershell
+copy .env.example .env
+npm install
+npm run docker:up
+npm run db:migrate
+npm run dev
+```
+
+Le web répond sur `http://localhost:5173` et l’API sur `http://127.0.0.1:4000`. Cette phase fournit onboarding, authentification, session opaque et tableau de bord protégé. Les modules métier en ligne ne sont pas encore portés. Voir `docs/OFFLINE_ONLINE_BOUNDARY.md`.

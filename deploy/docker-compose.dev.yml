@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: maktaba
+      POSTGRES_USER: maktaba
+      POSTGRES_PASSWORD: maktaba_dev
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - maktaba_pg_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U maktaba -d maktaba"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+volumes:
+  maktaba_pg_dev:

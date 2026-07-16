@@ -1,5 +1,22 @@
 # État d’implémentation
 
+## Version en ligne
+
+| Module | État | Vérification |
+|---|---|---|
+| Workspace npm séparé | complet | typecheck/build réussis |
+| Schéma PostgreSQL Drizzle (22 tables) | complet | migration générée, application bloquée par Docker arrêté |
+| Onboarding propriétaire API | complet | compilation; test PostgreSQL restant |
+| Sessions opaques/Argon2/cookies | complet | compilation; intégration PostgreSQL restante |
+| Web responsive et changement forcé | complet | build testé |
+| PWA statique | complet | manifeste et service worker générés |
+| Docker/Caddy | configuration complète | moteur Docker local indisponible |
+| Modules métier en ligne | manquants | restent sur desktop uniquement |
+
+Il n’existe aucune synchronisation offline/online. Le déploiement VPS n’a pas été effectué.
+
+## Version desktop hors ligne
+
 Évaluation factuelle au 16 juillet 2026.
 
 | Module | État | Vérification |
