@@ -1,0 +1,4 @@
+import {describe,expect,it} from 'vitest';import {cartTotal,money,ScannerBuffer,toCents} from './lib';
+describe('money',()=>{it('uses integer centimes',()=>{expect(toCents('12,50')).toBe(1250);expect(toCents('abc')).toBeNull();expect(money(1250)).toContain('12')})});
+describe('cart',()=>{it('calculates quantities and discounts',()=>{expect(cartTotal([{productId:1,name:'Stylo',quantity:3,unitPriceCents:500,discountCents:100,stock:5,productType:'physical_product'}],200)).toBe(1200)})});
+describe('scanner',()=>{it('buffers fast keys and suppresses duplicates',()=>{const s=new ScannerBuffer();'ABC'.split('').forEach((k,i)=>s.feed(k,i*10));expect(s.feed('Enter',40)).toBe('ABC');'ABC'.split('').forEach((k,i)=>s.feed(k,100+i*10));expect(s.feed('Enter',140)).toBeNull()});it('drops slow typing',()=>{const s=new ScannerBuffer();s.feed('A',0);s.feed('B',200);s.feed('C',210);expect(s.feed('Enter',220)).toBeNull()})});
