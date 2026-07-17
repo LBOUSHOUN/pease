@@ -47,12 +47,18 @@ const employee = (r: Row) => ({
   updatedAt: r.updated_at,
 });
 const temporaryPassword = () => `${randomBytes(8).toString("base64url")}aA7!`;
-const safeMetadata = (value: unknown): Record<string, unknown> | null => {
-  if (!value) return null;
+const safeMetadata = (value: unknown): Record<string, unknown> => {
+  if (!value) return {};
+
   try {
     const parsed = typeof value === "string" ? JSON.parse(value) : value;
-    if (!parsed || typeof parsed !== "object") return null;
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
     const blocked = /password|token|secret|cookie|pepper|database|credential/i;
+
     return Object.fromEntries(
       Object.entries(parsed as Record<string, unknown>)
         .filter(([key]) => !blocked.test(key))
@@ -62,7 +68,7 @@ const safeMetadata = (value: unknown): Record<string, unknown> | null => {
         ]),
     );
   } catch {
-    return null;
+    return {};
   }
 };
 const todayIn = (timezone: string) =>
@@ -249,48 +255,89 @@ const backupPath = (filename: string) => {
     throw new Error("PATH");
   return path;
 };
-function docker(args: string[], output?: NodeJS.WritableStream) {
-  return new Promise<void>((resolvePromise, reject) => {
-    const child = spawn("docker", args, {
-      windowsHide: true,
-      stdio: ["ignore", output ? "pipe" : "ignore", "pipe"],
-    });
-    let error = "";
-    child.stderr?.on("data", (x) => {
-      error += String(x).slice(0, 1000);
-    });
-    if (output && child.stdout)
-      void pipeline(child.stdout, output).catch(reject);
-    child.on("error", reject);
-    child.on("close", (code) =>
-      code === 0
-        ? resolvePromise()
-        : reject(
-            new Error(`Outil PostgreSQL indisponible (${code}): ${error}`),
-          ),
-    );
+async function docker(
+  args: string[],
+  output?: NodeJS.WritableStream,
+): Promise<void> {
+  const child = spawn("docker", args, {
+    windowsHide: true,
+    stdio: ["ignore", output ? "pipe" : "ignore", "pipe"],
   });
+
+  let error = "";
+
+  child.stderr?.on("data", (chunk) => {
+    error += String(chunk).slice(0, 1000);
+  });
+
+  const processFinished = new Promise<void>((resolveProcess, rejectProcess) => {
+    child.once("error", rejectProcess);
+
+    child.once("close", (code) => {
+      if (code === 0) {
+        resolveProcess();
+        return;
+      }
+
+      rejectProcess(
+        new Error(`Outil PostgreSQL indisponible (${code}): ${error}`),
+      );
+    });
+  });
+
+  const outputFinished =
+    output && child.stdout ? pipeline(child.stdout, output) : Promise.resolve();
+
+  try {
+    await Promise.all([processFinished, outputFinished]);
+  } catch (errorValue) {
+    child.kill();
+    throw errorValue;
+  }
 }
-function dockerInput(args: string[], input: NodeJS.ReadableStream) {
-  return new Promise<void>((resolvePromise, reject) => {
-    const child = spawn("docker", args, {
-      windowsHide: true,
-      stdio: ["pipe", "ignore", "pipe"],
-    });
-    let error = "";
-    child.stderr?.on("data", (x) => {
-      error += String(x).slice(0, 1000);
-    });
-    if (child.stdin) void pipeline(input, child.stdin).catch(reject);
-    child.on("error", reject);
-    child.on("close", (code) =>
-      code === 0
-        ? resolvePromise()
-        : reject(
-            new Error(`Outil PostgreSQL indisponible (${code}): ${error}`),
-          ),
-    );
+async function dockerInput(
+  args: string[],
+  input: NodeJS.ReadableStream,
+): Promise<void> {
+  const child = spawn("docker", args, {
+    windowsHide: true,
+    stdio: ["pipe", "ignore", "pipe"],
   });
+
+  let error = "";
+
+  child.stderr?.on("data", (chunk) => {
+    error += String(chunk).slice(0, 1000);
+  });
+
+  if (!child.stdin) {
+    child.kill();
+    throw new Error("Impossible d’ouvrir l’entrée Docker.");
+  }
+
+  const processFinished = new Promise<void>((resolveProcess, rejectProcess) => {
+    child.once("error", rejectProcess);
+
+    child.once("close", (code) => {
+      if (code === 0) {
+        resolveProcess();
+        return;
+      }
+
+      rejectProcess(
+        new Error(`Outil PostgreSQL indisponible (${code}): ${error}`),
+      );
+    });
+  });
+
+  const inputFinished = pipeline(input, child.stdin);
+
+  try {
+    await Promise.all([processFinished, inputFinished]);
+  } catch (errorValue) {
+    child.kill();
+    throw errorValue;
+  }
 }
 async function createBackupFile(filename: string) {
   await mkdir(backupRoot, { recursive: true });
@@ -614,28 +661,58 @@ export async function registerPhase5(app: FastifyInstance) {
     "/api/exports/:kind.csv",
     { preHandler: requirePermission("exports.create") },
     async (req, reply) => {
-      const kind = (req.params as { kind: string }).kind,
-        permission = reportPermission[kind];
-      if (!permission || !req.user!.permissions.includes(permission))
+      const kind = (req.params as { kind: string }).kind;
+      const permission = reportPermission[kind];
+
+      if (!permission || !req.user!.permissions.includes(permission)) {
         return bad(reply, "Export interdit.", 403);
-      const parsed = reportFiltersSchema.safeParse({
-        ...(req.query as Record<string, unknown>),
-        page: 1,
-        pageSize: 5000,
-      });
-      if (!parsed.success) return bad(reply, "Filtres invalides.");
+      }
+
+      const parsed = reportFiltersSchema.safeParse(
+        req.query as Record<string, unknown>,
+      );
+
+      if (!parsed.success) {
+        return bad(reply, "Filtres invalides.");
+      }
+
       const data = await reportData(
         kind,
-        { ...parsed.data, page: 1, pageSize: 5000 },
+        {
+          ...parsed.data,
+          page: 1,
+          pageSize: 5000,
+        },
         req.user!,
       );
-      if (data.totalRows > 5000)
+
+      if (data.totalRows > 5000) {
         return bad(
           reply,
           "Export limité à 5 000 lignes. Réduisez la période.",
           409,
         );
-      await sql`insert into audit_logs(user_id,action,entity_type,new_values_json) values(${req.user!.id},'export.created','export',${JSON.stringify({ kind, range: data.range, rows: data.totalRows })})`;
+      }
+
+      await sql`
+      insert into audit_logs (
+        user_id,
+        action,
+        entity_type,
+        new_values_json
+      )
+      values (
+        ${req.user!.id},
+        'export.created',
+        'export',
+        ${JSON.stringify({
+          kind,
+          range: data.range,
+          rows: data.totalRows,
+        })}
+      )
+    `;
+
       return reply
         .header("content-type", "text/csv; charset=utf-8")
         .header(
@@ -776,7 +853,7 @@ export async function registerPhase5(app: FastifyInstance) {
         if (info.size !== Number(b.size_bytes) || sum !== b.checksum_sha256)
           throw new Error("CHECKSUM");
         await dockerInput(
-          ["exec", "-i", "deploy-postgres-1", "pg_restore", "--list", "-"],
+          ["exec", "-i", "deploy-postgres-1", "pg_restore", "--list"],
           createReadStream(file),
         );
         await sql`update backups set status='verified',verified_at=now() where id=${id}`;

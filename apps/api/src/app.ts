@@ -31,6 +31,23 @@ export async function buildApp() {
       disableRequestLogging: config.NODE_ENV === "test",
     }),
   });
+  const failedLoginAttempts = new Map<string, { count: number; resetAt: number }>();
+  const loginRateLimitWindowMs = 5 * 60 * 1000;
+  const pruneFailedLoginAttempts = (now = Date.now()) => {
+    for (const [key, value] of failedLoginAttempts.entries()) {
+      if (value.resetAt <= now) failedLoginAttempts.delete(key);
+    }
+  };
+  const getFailedLoginAttemptState = (key: string, now = Date.now()) => {
+    pruneFailedLoginAttempts(now);
+    const existing = failedLoginAttempts.get(key);
+    if (!existing || existing.resetAt <= now) {
+      const fresh = { count: 0, resetAt: now + loginRateLimitWindowMs };
+      failedLoginAttempts.set(key, fresh);
+      return fresh;
+    }
+    return existing;
+  };
   await app.register(cookie);
   await app.register(helmet);
   await app.register(rateLimit, { global: false });
@@ -133,52 +150,80 @@ export async function buildApp() {
       return reply.code(201).send({ user: safeUser(created!) });
     },
   );
-  app.post(
-    "/api/auth/login",
-    {
-      config: {
-        rateLimit: { max: config.LOGIN_RATE_LIMIT, timeWindow: "5 minutes" },
-      },
-    },
-    async (req, reply) => {
-      const p = loginSchema.safeParse(req.body);
-      if (!p.success)
-        return reply.code(400).send({
-          code: "VALIDATION_ERROR",
-          message: "Vérifiez les informations saisies.",
-          requestId: req.id,
-        });
-      const found = await db
-        .select()
-        .from(users)
-        .where(
-          or(
-            dsql`lower(${users.username}) = ${p.data.login}`,
-            dsql`lower(${users.email}) = ${p.data.login}`,
-          ),
-        )
-        .limit(1);
-      const u = found[0];
-      if (!u || !(await argon2.verify(u.passwordHash, p.data.password)))
-        return reply.code(401).send({
-          code: "BAD_CREDENTIALS",
-          message: "Identifiant ou mot de passe incorrect.",
-          requestId: req.id,
-        });
-      if (!u.isActive)
-        return reply.code(403).send({
-          code: "INACTIVE_USER",
-          message: "Compte désactivé",
-          requestId: req.id,
-        });
-      await db
-        .update(users)
-        .set({ lastLoginAt: new Date() })
-        .where(eq(users.id, u.id));
-      await createSession(u.id, reply);
-      return { user: safeUser(u) };
-    },
-  );
+  app.post("/api/auth/login", async (req, reply) => {
+    const p = loginSchema.safeParse(req.body);
+
+    if (!p.success) {
+      return reply.code(400).send({
+        code: "VALIDATION_ERROR",
+        message: "Vérifiez les informations saisies.",
+        requestId: req.id,
+      });
+    }
+
+    const normalizedLogin = p.data.login.trim().toLowerCase();
+    const loginKey = `${req.ip}:${normalizedLogin}`;
+    const now = Date.now();
+    const state = getFailedLoginAttemptState(loginKey, now);
+
+    if (state.count >= Number(config.LOGIN_RATE_LIMIT)) {
+      reply.header(
+        "retry-after",
+        Math.max(1, Math.ceil((state.resetAt - now) / 1000)).toString(),
+      );
+      return reply.code(429).send({
+        code: "RATE_LIMITED",
+        message: "Trop de tentatives. Réessayez dans quelques minutes.",
+        requestId: req.id,
+      });
+    }
+
+    const found = await db
+      .select()
+      .from(users)
+      .where(
+        or(
+          dsql`lower(${users.username}) = ${normalizedLogin}`,
+          dsql`lower(${users.email}) = ${normalizedLogin}`,
+        ),
+      )
+      .limit(1);
+
+    const u = found[0];
+    const passwordIsValid =
+      !!u && (await argon2.verify(u.passwordHash, p.data.password));
+
+    if (!passwordIsValid) {
+      state.count += 1;
+      state.resetAt = Math.max(state.resetAt, now + loginRateLimitWindowMs);
+      return reply.code(401).send({
+        code: "BAD_CREDENTIALS",
+        message: "Identifiant ou mot de passe incorrect.",
+        requestId: req.id,
+      });
+    }
+
+    if (!u.isActive) {
+      state.count += 1;
+      state.resetAt = Math.max(state.resetAt, now + loginRateLimitWindowMs);
+      return reply.code(403).send({
+        code: "INACTIVE_USER",
+        message: "Compte désactivé",
+        requestId: req.id,
+      });
+    }
+
+    failedLoginAttempts.delete(loginKey);
+
+    await db
+      .update(users)
+      .set({ lastLoginAt: new Date() })
+      .where(eq(users.id, u.id));
+
+    await createSession(u.id, reply);
+
+    return { user: safeUser(u) };
+  });
   app.post("/api/auth/logout", async (req, reply) => {
     await revoke(req, reply);
     return { ok: true };
