@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.maktaba.pos",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "beforeDevCommand": "node -e \"process.exit(0)\"",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm --prefix ../../ run build --workspace=@maktaba/web && npm --prefix ../../ run build --workspace=@maktaba/api",
+    "frontendDist": "../../web/dist"
   },
   "app": {
     "windows": [
@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://localhost:3000 http://127.0.0.1:3000 http://localhost:5173 http://127.0.0.1:5173 ws://localhost:5173 ws://127.0.0.1:5173; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
     }
   },
   "bundle": {

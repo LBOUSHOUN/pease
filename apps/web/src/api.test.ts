@@ -1,7 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { request } from "./api";
+import { buildApiUrl, request, resolveApiBaseUrl } from "./api";
 afterEach(() => vi.unstubAllGlobals());
 describe("API client", () => {
+  it("uses the desktop API origin when running inside Tauri", () => {
+    expect(
+      resolveApiBaseUrl({ env: {}, location: { protocol: "tauri:" } }),
+    ).toBe("http://localhost:3000/api");
+    expect(buildApiUrl("/auth/me", { env: {}, location: { protocol: "tauri:" } })).toBe(
+      "http://localhost:3000/api/auth/me",
+    );
+  });
+
+  it("uses the configured VITE_API_URL when provided", () => {
+    expect(
+      resolveApiBaseUrl({
+        env: { VITE_API_URL: "https://api.example.com/api" },
+        location: { protocol: "http:" },
+      }),
+    ).toBe("https://api.example.com/api");
+  });
   it("sends empty logout without JSON body or content type", async () => {
     const fetch = vi
       .fn()

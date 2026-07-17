@@ -1,5 +1,6 @@
 import Fastify, { LogController } from "fastify";
 import cookie from "@fastify/cookie";
+import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import argon2 from "argon2";
@@ -48,8 +49,26 @@ export async function buildApp() {
     }
     return existing;
   };
+  const allowedOrigins = [
+    config.APP_ORIGIN,
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:1420",
+    "http://127.0.0.1:1420",
+    "tauri://localhost",
+  ];
   await app.register(cookie);
   await app.register(helmet);
+  await app.register(cors, {
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(null, false);
+    },
+    credentials: true,
+  });
   await app.register(rateLimit, { global: false });
   app.setErrorHandler((e, req, reply) => {
     const status = (e as { statusCode?: number }).statusCode ?? 500;

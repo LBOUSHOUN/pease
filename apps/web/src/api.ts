@@ -22,6 +22,31 @@ const messages: Record<number, string> = {
   500: "Une erreur interne est survenue. Réessayez plus tard.",
 };
 
+type ApiBaseContext = {
+  env?: Record<string, string | boolean | undefined>;
+  location?: { protocol?: string };
+};
+
+export function resolveApiBaseUrl(context: ApiBaseContext = {}): string {
+  const env = context.env ?? import.meta.env;
+  const configured =
+    typeof env.VITE_API_URL === "string" ? env.VITE_API_URL.trim() : "";
+  if (configured) return configured.replace(/\/$/, "");
+  const protocol = context.location?.protocol;
+  const browserProtocol =
+    typeof window !== "undefined" ? window.location.protocol : undefined;
+  const activeProtocol = protocol ?? browserProtocol;
+  return activeProtocol === "tauri:" ? "http://localhost:3000/api" : "/api";
+}
+
+export function buildApiUrl(path: string, context: ApiBaseContext = {}): string {
+  const base = resolveApiBaseUrl(context);
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return base.startsWith("http://") || base.startsWith("https://")
+    ? `${base}${normalizedPath}`
+    : `${base}${normalizedPath}`;
+}
+
 function normalizedError(
   status: number,
   body: unknown,
@@ -63,7 +88,7 @@ export async function request<T>(
   }
   let response: Response;
   try {
-    response = await fetch(`/api${path}`, {
+    response = await fetch(buildApiUrl(path), {
       ...init,
       headers,
       body,
