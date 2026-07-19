@@ -79,6 +79,24 @@ struct SaleInput {
     notes: Option<String>,
     idempotency_key: String,
 }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OfflineOutboxEntry {
+    id: String,
+    operation_type: String,
+    idempotency_key: String,
+    payload: Value,
+    created_at: String,
+    updated_at: String,
+    status: String,
+    attempt_count: i64,
+    last_error: Option<String>,
+    last_status_code: Option<i64>,
+    server_entity_id: Option<i64>,
+    synced_at: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SaleLine {
@@ -599,6 +617,236 @@ fn close_register(
 }
 
 #[tauri::command]
+fn queue_offline_sale(
+    payload_json: String,
+    idempotency_key: String,
+    db: State<Database>,
+) -> Result<Value, String> {
+    let payload: Value = serde_json::from_str(&payload_json)
+        .map_err(|_| "Payload hors ligne invalide".to_string())?;
+    if idempotency_key.trim().is_empty()
+        || payload["idempotencyKey"].as_str() != Some(idempotency_key.as_str())
+        || payload["paymentMode"].as_str() != Some("cash")
+        || !payload["customerId"].is_null()
+        || payload["items"]
+            .as_array()
+            .map_or(true, |items| items.is_empty())
+    {
+        return Err("Seule une vente comptant valide peut être mise en attente".into());
+    }
+    let id = format!("offline-{}", uuid::Uuid::new_v4());
+    let now = chrono::Utc::now().to_rfc3339();
+    let c = db.connect()?;
+    c.execute(
+        "INSERT INTO offline_outbox(id,operation_type,idempotency_key,payload_json,status,created_at,updated_at) VALUES(?1,'cash_sale',?2,?3,'pending',?4,?4)",
+        params![id, idempotency_key, payload_json, now],
+    )
+    .map_err(db_err)?;
+    Ok(json!({"id": id, "status": "pending"}))
+}
+
+#[tauri::command]
+fn list_offline_queue(db: State<Database>) -> Result<Vec<OfflineOutboxEntry>, String> {
+    let c = db.connect()?;
+    let mut q = c
+        .prepare(
+            "SELECT id,operation_type,idempotency_key,payload_json,created_at,updated_at,status,attempt_count,last_error,last_status_code,server_entity_id,synced_at FROM offline_outbox ORDER BY created_at ASC,id ASC",
+        )
+        .map_err(db_err)?;
+    let rows = q
+        .query_map([], |r| {
+            Ok(OfflineOutboxEntry {
+                id: r.get(0)?,
+                operation_type: r.get(1)?,
+                idempotency_key: r.get(2)?,
+                payload: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or(Value::Null),
+                created_at: r.get(4)?,
+                updated_at: r.get(5)?,
+                status: r.get(6)?,
+                attempt_count: r.get(7)?,
+                last_error: r.get(8)?,
+                last_status_code: r.get(9)?,
+                server_entity_id: r.get(10)?,
+                synced_at: r.get(11)?,
+            })
+        })
+        .map_err(db_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_err)?;
+    Ok(rows)
+}
+
+#[tauri::command]
+fn transition_offline_sale(
+    id: String,
+    status: String,
+    last_error: Option<String>,
+    last_status_code: Option<i64>,
+    server_entity_id: Option<i64>,
+    db: State<Database>,
+) -> Result<(), String> {
+    let c = db.connect()?;
+    let current: String = c
+        .query_row(
+            "SELECT status FROM offline_outbox WHERE id=?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .map_err(|_| "Opération hors ligne introuvable".to_string())?;
+    let valid = matches!(
+        (current.as_str(), status.as_str()),
+        ("pending", "syncing")
+            | ("syncing", "pending")
+            | ("syncing", "synced")
+            | ("syncing", "rejected")
+    );
+    if !valid {
+        return Err("Transition de statut hors ligne interdite".into());
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    let changed = c.execute(
+        "UPDATE offline_outbox SET status=?1,attempt_count=attempt_count+CASE WHEN ?1='syncing' THEN 1 ELSE 0 END,last_error=?2,last_status_code=?3,server_entity_id=coalesce(?4,server_entity_id),updated_at=?5,synced_at=CASE WHEN ?1='synced' THEN ?5 ELSE synced_at END WHERE id=?6 AND status=?7",
+        params![status, last_error, last_status_code, server_entity_id, now, id, current],
+    ).map_err(db_err)?;
+    if changed != 1 {
+        return Err("L’opération a été modifiée simultanément".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn replace_offline_cache(
+    categories_json: String,
+    products_json: String,
+    settings_json: String,
+    register_json: String,
+    db: State<Database>,
+) -> Result<Value, String> {
+    let categories: Vec<Value> = serde_json::from_str(&categories_json)
+        .map_err(|_| "Catégories hors ligne invalides".to_string())?;
+    let products: Vec<Value> = serde_json::from_str(&products_json)
+        .map_err(|_| "Produits hors ligne invalides".to_string())?;
+    let settings: Value = serde_json::from_str(&settings_json)
+        .map_err(|_| "Paramètres hors ligne invalides".to_string())?;
+    let register: Value = serde_json::from_str(&register_json)
+        .map_err(|_| "État de caisse hors ligne invalide".to_string())?;
+    if !register["isOpen"].is_boolean() {
+        return Err("État de caisse hors ligne invalide".into());
+    }
+    let _guard = db.guard()?;
+    let mut c = db.connect()?;
+    let tx = c.transaction().map_err(db_err)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    tx.execute("DELETE FROM offline_categories", [])
+        .map_err(db_err)?;
+    tx.execute("DELETE FROM offline_products", [])
+        .map_err(db_err)?;
+    tx.execute("DELETE FROM offline_settings", [])
+        .map_err(db_err)?;
+    for category in categories {
+        let id = category["id"]
+            .as_i64()
+            .ok_or_else(|| "Catégorie hors ligne invalide".to_string())?;
+        tx.execute(
+            "INSERT INTO offline_categories(server_id,payload_json,updated_at) VALUES(?1,?2,?3)",
+            params![id, category.to_string(), now],
+        )
+        .map_err(db_err)?;
+    }
+    for product in products {
+        let id = product["id"].as_i64().unwrap_or(0);
+        let name = product["name"].as_str().unwrap_or("");
+        let product_type = product["productType"].as_str().unwrap_or("");
+        let selling_price = product["sellingPriceCents"].as_i64().unwrap_or(-1);
+        let stock = product["currentStock"].as_f64().unwrap_or(0.0);
+        let active = product["isActive"].as_bool().unwrap_or(false);
+        if id <= 0
+            || name.trim().is_empty()
+            || !matches!(product_type, "physical_product" | "service")
+            || selling_price < 0
+        {
+            return Err("Produit hors ligne invalide".into());
+        }
+        tx.execute(
+            "INSERT INTO offline_products(server_id,barcode,internal_barcode,sku,name,product_type,sale_price_cents,stock_quantity,is_active,payload_json,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            params![id,product["manufacturerBarcode"].as_str(),product["internalBarcode"].as_str(),product["sku"].as_str(),name,product_type,selling_price,stock,active,product.to_string(),now],
+        ).map_err(db_err)?;
+    }
+    tx.execute(
+        "INSERT INTO offline_settings(id,payload_json,updated_at) VALUES(1,?1,?2)",
+        params![settings.to_string(), now],
+    )
+    .map_err(db_err)?;
+    tx.execute("INSERT INTO offline_metadata(key,value_json,updated_at) VALUES('register_status',?1,?2) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at", params![register.to_string(), now]).map_err(db_err)?;
+    tx.execute("INSERT INTO offline_metadata(key,value_json,updated_at) VALUES('last_refresh',?1,?2) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at", params![json!({"at":now}).to_string(), now]).map_err(db_err)?;
+    tx.commit().map_err(db_err)?;
+    Ok(json!({"productCount": products_json_count(&products_json), "lastRefreshAt": now}))
+}
+
+fn products_json_count(value: &str) -> usize {
+    serde_json::from_str::<Vec<Value>>(value).map_or(0, |v| v.len())
+}
+
+#[tauri::command]
+fn list_cached_products(
+    search: String,
+    limit: Option<i64>,
+    db: State<Database>,
+) -> Result<Vec<Value>, String> {
+    let c = db.connect()?;
+    let pattern = format!("%{}%", search.trim().to_lowercase());
+    let limit = limit.unwrap_or(20).clamp(1, 100);
+    let mut q = c.prepare("SELECT payload_json FROM offline_products WHERE is_active=1 AND (lower(name) LIKE ?1 OR lower(coalesce(sku,'')) LIKE ?1 OR lower(coalesce(barcode,'')) LIKE ?1 OR lower(coalesce(internal_barcode,'')) LIKE ?1) ORDER BY name LIMIT ?2").map_err(db_err)?;
+    let rows = q
+        .query_map(params![pattern, limit], |r| r.get::<_, String>(0))
+        .map_err(db_err)?
+        .map(|row| {
+            row.map_err(db_err).and_then(|s| {
+                serde_json::from_str(&s).map_err(|_| "Cache produit corrompu".to_string())
+            })
+        })
+        .collect();
+    rows
+}
+
+#[tauri::command]
+fn lookup_cached_product(code: String, db: State<Database>) -> Result<Option<Value>, String> {
+    let c = db.connect()?;
+    let raw: Option<String> = c.query_row("SELECT payload_json FROM offline_products WHERE is_active=1 AND (barcode=?1 OR internal_barcode=?1 OR sku=?1) LIMIT 1", [code.trim()], |r| r.get(0)).optional().map_err(db_err)?;
+    raw.map(|s| serde_json::from_str(&s).map_err(|_| "Cache produit corrompu".to_string()))
+        .transpose()
+}
+
+#[tauri::command]
+fn get_offline_cache_status(db: State<Database>) -> Result<Value, String> {
+    let c = db.connect()?;
+    let product_count: i64 = c
+        .query_row("SELECT count(*) FROM offline_products", [], |r| r.get(0))
+        .map_err(db_err)?;
+    let register: Option<String> = c
+        .query_row(
+            "SELECT value_json FROM offline_metadata WHERE key='register_status'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(db_err)?;
+    let last_refresh_at: Option<String> = c
+        .query_row(
+            "SELECT updated_at FROM offline_metadata WHERE key='last_refresh'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(db_err)?;
+    Ok(json!({
+        "productCount": product_count,
+        "lastRefreshAt": last_refresh_at,
+        "register": register.and_then(|value| serde_json::from_str::<Value>(&value).ok())
+    }))
+}
+
+#[tauri::command]
 fn create_sale(
     input: SaleInput,
     db: State<Database>,
@@ -888,6 +1136,13 @@ pub fn run() {
             current_register,
             open_register,
             close_register,
+            queue_offline_sale,
+            list_offline_queue,
+            transition_offline_sale,
+            replace_offline_cache,
+            list_cached_products,
+            lookup_cached_product,
+            get_offline_cache_status,
             create_sale,
             list_customers,
             save_customer,

@@ -29,6 +29,20 @@ import {
   estimatedCredit,
   remainingDebt,
 } from "./phase3-utils";
+import {
+  checkConnection,
+  findCachedProductByCode,
+  getCachedProducts,
+  getOfflineCacheStatus,
+  getOfflineQueueSummary,
+  estimatedStock,
+  queueOfflineSale,
+  refreshOfflineCache,
+  syncPendingOfflineSales,
+  readQueueAsync,
+  isTauriRuntime,
+} from "./offline-pos";
+import type { OfflineCacheStatus, OfflineQueueSummary, OfflineSaleRecord } from "./offline-pos";
 
 const has = (user: SafeUser, permission: string) =>
   user.permissions.includes(permission);
@@ -866,13 +880,16 @@ export function PosPage({ user }: { user: SafeUser }) {
     [status, setStatus] = useState<RegisterStatus>(),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
-    [sale, setSale] = useState<SaleResult>(),
+    [sale, setSale] = useState<SaleResult | { id: string; saleNumber: string; totalCents: number }>(),
     [camera, setCamera] = useState(false),
+    [connectionState, setConnectionState] = useState<"online" | "offline" | "checking">("checking"),
+    [queueSummary, setQueueSummary] = useState<OfflineQueueSummary>({ pendingCount: 0, syncingCount: 0, syncedCount: 0, rejectedCount: 0 }),
     nav = useNavigate(),
     search = useDebounced(query),
     cq = useDebounced(customerQuery),
     total = estimatedCartTotal(cart),
     checkoutLock = useRef(false);
+  const offline = connectionState === "offline";
   let cashCents = 0;
   try {
     cashCents = cash ? madToCents(cash) : 0;
@@ -886,18 +903,48 @@ export function PosPage({ user }: { user: SafeUser }) {
         ? estimatedCredit(total, cashCents)
         : 0;
   useEffect(() => {
-    request<RegisterStatus>("/register/status").then(setStatus);
+    let active = true;
+    const update = () => void checkConnection().then((state) => active && setConnectionState(state));
+    update();
+    const timer = window.setInterval(update, 30_000);
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener("online", update); window.removeEventListener("offline", update); };
   }, []);
   useEffect(() => {
+    if (connectionState === "offline") {
+      void getOfflineCacheStatus().then((cached) => {
+        if (cached?.register) setStatus({ isOpen: cached.register.isOpen, sessionId: cached.register.sessionId } as RegisterStatus);
+      });
+      return;
+    }
+    if (connectionState !== "online") return;
+    request<RegisterStatus>("/register/status")
+      .then((value) => {
+        setStatus(value);
+        if (isTauriRuntime()) void refreshOfflineCache({ isOpen: value.isOpen, sessionId: value.sessionId });
+      })
+      .catch(() => undefined);
+  }, [connectionState]);
+  useEffect(() => {
+    if (connectionState === "offline") {
+      if (mode !== "cash") setMode("cash");
+      void Promise.all([getCachedProducts(search, 12), readQueueAsync()])
+        .then(([products, queue]) => setResults(estimatedStock(products, queue)));
+      return;
+    }
     if (!search) return setResults([]);
     const c = new AbortController();
     request<ProductListResponse>(
       `/products?search=${encodeURIComponent(search)}&status=active&pageSize=12`,
       { signal: c.signal },
-    ).then((x) => setResults(x.rows));
+    )
+      .then((x) => setResults(x.rows))
+      .catch(() => setResults([]));
     return () => c.abort();
-  }, [search]);
+  }, [connectionState, mode, search]);
   useEffect(() => {
+    if (connectionState === "offline") return setCustomers([]);
     if (!cq) return setCustomers([]);
     const c = new AbortController();
     request<CustomerListResponse>(
@@ -905,7 +952,11 @@ export function PosPage({ user }: { user: SafeUser }) {
       { signal: c.signal },
     ).then((x) => setCustomers(x.rows));
     return () => c.abort();
-  }, [cq]);
+  }, [connectionState, cq]);
+  useEffect(() => {
+    if (connectionState !== "online") return;
+    void syncPendingOfflineSales().finally(() => void getOfflineQueueSummary().then(setQueueSummary));
+  }, [connectionState]);
   const add = (product: ProductListRow) => {
     if (
       product.productType === "physical_product" &&
@@ -918,13 +969,16 @@ export function PosPage({ user }: { user: SafeUser }) {
   };
   const scan = async (code: string) => {
     try {
-      add(
-        (
-          await request<ProductLookup>(
-            `/products/lookup?code=${encodeURIComponent(code)}&saleReady=true`,
-          )
-        ).product,
-      );
+      const product =
+        connectionState === "offline"
+          ? await findCachedProductByCode(code)
+          : (
+              await request<ProductLookup>(
+                `/products/lookup?code=${encodeURIComponent(code)}&saleReady=true`,
+              )
+            ).product;
+      if (!product) throw new Error("Produit introuvable");
+      add(product);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Produit introuvable");
     }
@@ -932,6 +986,8 @@ export function PosPage({ user }: { user: SafeUser }) {
   useScanner((code) => void scan(code));
   const checkout = async () => {
     if (checkoutLock.current || !cart.length) return;
+    if (offline && mode !== "cash")
+      return setError("Le crédit et le partiel sont indisponibles hors ligne. Passez en mode comptant.");
     if ((mode === "credit" || mode === "partial") && !customerId)
       return setError("Choisissez un client pour le crédit.");
     if ((mode === "cash" || mode === "partial") && !status?.isOpen)
@@ -939,22 +995,50 @@ export function PosPage({ user }: { user: SafeUser }) {
     try {
       checkoutLock.current = true;
       setBusy(true);
+      const idempotencyKey = crypto.randomUUID();
+      const onlinePayload = {
+        customerId: customerId ? Number(customerId) : null,
+        items: cart.map((x) => ({
+          productId: x.product.id,
+          quantity: x.quantity,
+        })),
+        paymentMode: mode,
+        cashPaidCents: mode === "partial" ? cashCents : 0,
+        idempotencyKey,
+      };
+      if (offline) {
+        if (!isTauriRuntime()) throw new Error("Les ventes hors ligne sont réservées à l’application de bureau.");
+        if (!status?.sessionId) throw new Error("Une caisse ouverte observée en ligne est requise.");
+        const id = await queueOfflineSale({
+          schemaVersion: 1,
+          customerId: null,
+          items: cart.map((x) => ({ productId: x.product.id, quantity: x.quantity, cachedUnitPriceCents: x.product.sellingPriceCents })),
+          paymentMode: "cash",
+          cashPaidCents: 0,
+          idempotencyKey,
+          clientTimestamp: new Date().toISOString(),
+          registerIdSnapshot: status.sessionId,
+          userSnapshot: { id: user.id, fullName: user.fullName, role: user.role },
+        });
+        setSale({
+          id,
+          saleNumber: `HORS-LIGNE #${id.slice(0, 8).toUpperCase()}`,
+          totalCents: total,
+        });
+        setCart([]);
+        setCash("");
+        setQueueSummary(await getOfflineQueueSummary());
+        setError("");
+        return;
+      }
       const result = await request<SaleResult>("/sales", {
         method: "POST",
-        json: {
-          customerId: customerId ? Number(customerId) : null,
-          items: cart.map((x) => ({
-            productId: x.product.id,
-            quantity: x.quantity,
-          })),
-          paymentMode: mode,
-          cashPaidCents: mode === "partial" ? cashCents : 0,
-          idempotencyKey: crypto.randomUUID(),
-        },
+        json: onlinePayload,
       });
       setSale(result);
       setCart([]);
       setCash("");
+      setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Vente impossible");
     } finally {
@@ -969,6 +1053,11 @@ export function PosPage({ user }: { user: SafeUser }) {
         <Link to="/sales">Historique</Link>
       </div>
       <ErrorBox value={error} />
+      {offline && (
+        <Notice
+          value={`Mode hors ligne · ${queueSummary.pendingCount} vente(s) en attente de synchronisation`}
+        />
+      )}
       {user.permissions.includes("scanner.camera") && (
         <button type="button" onClick={() => setCamera(true)}>
           Scanner avec la caméra
@@ -985,7 +1074,7 @@ export function PosPage({ user }: { user: SafeUser }) {
           value={`Vente ${sale.saleNumber} enregistrée · ${centsToMad(sale.totalCents)}`}
         />
       )}{" "}
-      {sale && (
+      {sale && !sale.saleNumber.startsWith("HORS-LIGNE") && (
         <button onClick={() => nav(`/sales/${sale.id}`)}>
           Voir et imprimer le reçu
         </button>
@@ -1006,7 +1095,9 @@ export function PosPage({ user }: { user: SafeUser }) {
               {x.name} · {centsToMad(x.sellingPriceCents)}{" "}
               {x.productType === "service"
                 ? "· Service"
-                : `· stock ${x.currentStock}`}
+                : offline
+                  ? `· Stock estimé lors de la dernière synchronisation : ${x.currentStock}`
+                  : `· stock ${x.currentStock}`}
             </button>
           ))}
         </section>
@@ -1068,6 +1159,7 @@ export function PosPage({ user }: { user: SafeUser }) {
             <select
               value={mode}
               onChange={(e) => setMode(e.target.value as typeof mode)}
+              disabled={offline}
             >
               <option value="cash">Comptant</option>
               <option value="credit">Crédit</option>
@@ -1110,7 +1202,7 @@ export function PosPage({ user }: { user: SafeUser }) {
             <div className="error">Caisse fermée.</div>
           )}
           <button disabled={busy || !cart.length} onClick={checkout}>
-            {busy ? "Encaissement…" : "Valider la vente"}
+            {busy ? "Encaissement…" : offline ? "Mettre en file hors ligne" : "Valider la vente"}
           </button>
         </section>
       </div>
@@ -1262,6 +1354,155 @@ export function SaleDetails() {
           </dl>
           <p>{sale.receiptFooter}</p>
         </>
+      )}
+    </main>
+  );
+}
+
+export function OfflineQueuePage() {
+  const [queueSummary, setQueueSummary] = useState<OfflineQueueSummary>({ pendingCount: 0, syncingCount: 0, syncedCount: 0, rejectedCount: 0 }),
+    [records, setRecords] = useState<OfflineSaleRecord[]>([]),
+    [syncing, setSyncing] = useState(false),
+    [cache, setCache] = useState<OfflineCacheStatus>(),
+    [refreshing, setRefreshing] = useState(false),
+    [error, setError] = useState("");
+
+  const refreshQueue = async () => {
+    const [summary, queue] = await Promise.all([getOfflineQueueSummary(), readQueueAsync()]);
+    setQueueSummary(summary);
+    setRecords(queue);
+    setCache(await getOfflineCacheStatus());
+  };
+  const handleCacheRefresh = async () => {
+    setRefreshing(true);
+    setError("");
+    try {
+      const register = await request<RegisterStatus>("/register/status");
+      await refreshOfflineCache({ isOpen: register.isOpen, sessionId: register.sessionId });
+      await refreshQueue();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Actualisation impossible.");
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshQueue();
+  }, []);
+
+  const handleSync = async () => {
+    setSyncing(true);
+    try {
+      await syncPendingOfflineSales();
+      await refreshQueue();
+    } catch (error) {
+      console.error("Sync failed:", error);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  return (
+    <main className="page">
+      <div className="title">
+        <h1>File hors ligne</h1>
+        <Link to="/pos">Retour au point de vente</Link>
+      </div>
+      <ErrorBox value={error} />
+      <p>Dernière actualisation : {cache?.lastRefreshAt ? new Date(cache.lastRefreshAt).toLocaleString("fr-FR") : "Jamais"} · {cache?.productCount ?? 0} produit(s) en cache.</p>
+      <button className="secondary" onClick={handleCacheRefresh} disabled={refreshing}>
+        {refreshing ? "Actualisation…" : "Actualiser les données hors ligne"}
+      </button>
+      <div className="summary-cards">
+        <div className="card">
+          <dt>Synchronisation</dt>
+          <dd>{queueSummary.syncingCount}</dd>
+        </div>
+        <div className="card">
+          <dt>En attente</dt>
+          <dd>{queueSummary.pendingCount}</dd>
+        </div>
+        <div className="card">
+          <dt>Synchronisées</dt>
+          <dd>{queueSummary.syncedCount}</dd>
+        </div>
+        <div className="card">
+          <dt>Rejetées</dt>
+          <dd>{queueSummary.rejectedCount}</dd>
+        </div>
+      </div>
+      {queueSummary.pendingCount > 0 && (
+        <button
+          className="primary"
+          onClick={handleSync}
+          disabled={syncing}
+        >
+          {syncing ? "Synchronisation..." : "Synchroniser maintenant"}
+        </button>
+      )}
+      {!records.length ? (
+        <p className="empty">Aucune vente dans la file.</p>
+      ) : (
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Date</th>
+              <th>Statut</th>
+              <th>Articles</th>
+              <th>Total</th>
+              <th>Tentatives</th>
+              <th>Erreur</th>
+              <th>Vente serveur</th>
+            </tr>
+          </thead>
+          <tbody>
+            {records.map((record: OfflineSaleRecord) => (
+              <tr key={record.id}>
+                <td>
+                  <code>{record.id.slice(0, 8).toUpperCase()}</code>
+                </td>
+                <td>{new Date(record.createdAt).toLocaleString("fr-FR")}</td>
+                <td>
+                  <span
+                    className={`badge ${
+                      record.status === "synced"
+                        ? "success"
+                        : record.status === "rejected"
+                          ? "danger"
+                          : record.status === "syncing"
+                            ? "warning"
+                            : "info"
+                    }`}
+                  >
+                    {record.status === "synced"
+                      ? "Synchronisée"
+                      : record.status === "rejected"
+                        ? "Rejetée"
+                        : record.status === "syncing"
+                          ? "Synchronisation"
+                          : "En attente"}
+                  </span>
+                </td>
+                <td>{record.payload.items.length}</td>
+                <td>
+                  {centsToMad(
+                    record.payload.items.reduce(
+                      (sum, item) => sum + item.quantity * item.cachedUnitPriceCents,
+                      0,
+                    ),
+                  )}
+                </td>
+                <td>{record.attemptCount}</td>
+                <td>{record.lastError || "-"}</td>
+                <td>
+                  {record.serverEntityId ? `Vente #${record.serverEntityId}` : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </main>
   );

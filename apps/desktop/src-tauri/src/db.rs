@@ -91,6 +91,118 @@ impl Database {
             tx.commit()
                 .map_err(|_| "Migration impossible".to_string())?;
         }
+        let v3: Option<i64> = c
+            .query_row(
+                "SELECT version FROM schema_migrations WHERE version=3",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|_| "Migration impossible".to_string())?;
+        if v3.is_none() {
+            let tx = c
+                .unchecked_transaction()
+                .map_err(|_| "Migration impossible".to_string())?;
+            tx.execute_batch(
+                "CREATE TABLE offline_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE offline_categories(id INTEGER PRIMARY KEY,name TEXT NOT NULL,description TEXT,is_active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE TABLE offline_products(id INTEGER PRIMARY KEY,category_id INTEGER,name TEXT NOT NULL,description TEXT,product_type TEXT NOT NULL,sku TEXT,manufacturer_barcode TEXT,internal_barcode TEXT NOT NULL UNIQUE,qr_identifier TEXT NOT NULL UNIQUE,purchase_price_cents INTEGER NOT NULL DEFAULT 0,selling_price_cents INTEGER NOT NULL DEFAULT 0,wholesale_price_cents INTEGER NOT NULL DEFAULT 0,wholesale_min_quantity INTEGER NOT NULL DEFAULT 1,current_stock INTEGER NOT NULL DEFAULT 0,minimum_stock INTEGER NOT NULL DEFAULT 0,unit TEXT NOT NULL DEFAULT 'unité',shelf_location TEXT,is_active INTEGER NOT NULL DEFAULT 1,track_stock INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE TABLE offline_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE offline_outbox(id TEXT PRIMARY KEY,payload_json TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,status TEXT NOT NULL CHECK(status IN ('pending','syncing','synced','rejected')) DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,last_error TEXT,last_status_code INTEGER); CREATE INDEX idx_offline_outbox_status ON offline_outbox(status);",
+            )
+            .map_err(|_| "Migration 3 impossible".to_string())?;
+            tx.execute(
+                "INSERT INTO schema_migrations(version,name) VALUES(3,'offline_outbox_schema')",
+                [],
+            )
+            .map_err(|_| "Migration impossible".to_string())?;
+            tx.commit()
+                .map_err(|_| "Migration impossible".to_string())?;
+        }
+        let v4: Option<i64> = c
+            .query_row(
+                "SELECT version FROM schema_migrations WHERE version=4",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|_| "Migration impossible".to_string())?;
+        if v4.is_none() {
+            let tx = c
+                .unchecked_transaction()
+                .map_err(|_| "Migration impossible".to_string())?;
+            tx.execute_batch(
+                r#"
+ALTER TABLE offline_metadata RENAME TO offline_metadata_v3;
+ALTER TABLE offline_categories RENAME TO offline_categories_v3;
+ALTER TABLE offline_products RENAME TO offline_products_v3;
+ALTER TABLE offline_settings RENAME TO offline_settings_v3;
+ALTER TABLE offline_outbox RENAME TO offline_outbox_v3;
+
+CREATE TABLE offline_metadata(
+  key TEXT PRIMARY KEY,
+  value_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE offline_categories(
+  server_id INTEGER PRIMARY KEY,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE offline_products(
+  server_id INTEGER PRIMARY KEY,
+  barcode TEXT,
+  internal_barcode TEXT,
+  sku TEXT,
+  name TEXT NOT NULL,
+  product_type TEXT NOT NULL,
+  sale_price_cents INTEGER NOT NULL CHECK(sale_price_cents >= 0),
+  stock_quantity REAL NOT NULL,
+  is_active INTEGER NOT NULL CHECK(is_active IN (0,1)),
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE offline_settings(
+  id INTEGER PRIMARY KEY,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE offline_outbox(
+  id TEXT PRIMARY KEY,
+  operation_type TEXT NOT NULL CHECK(operation_type = 'cash_sale'),
+  idempotency_key TEXT NOT NULL UNIQUE,
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','syncing','synced','rejected')),
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+  last_error TEXT,
+  last_status_code INTEGER,
+  server_entity_id INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  synced_at TEXT
+);
+CREATE INDEX idx_offline_products_barcode ON offline_products(barcode);
+CREATE INDEX idx_offline_products_internal_barcode ON offline_products(internal_barcode);
+CREATE INDEX idx_offline_products_sku ON offline_products(sku);
+CREATE INDEX idx_offline_products_name ON offline_products(name);
+CREATE INDEX idx_offline_outbox_status_created ON offline_outbox(status,created_at);
+
+INSERT INTO offline_outbox(
+  id,operation_type,idempotency_key,payload_json,status,attempt_count,last_error,
+  last_status_code,created_at,updated_at,synced_at
+)
+SELECT id,'cash_sale',
+       coalesce(json_extract(payload_json,'$.idempotencyKey'),id),
+       payload_json,status,attempts,last_error,last_status_code,created_at,
+       created_at,CASE WHEN status='synced' THEN created_at END
+FROM offline_outbox_v3;
+"#,
+            )
+            .map_err(|_| "Migration hors ligne v4 impossible".to_string())?;
+            tx.execute(
+                "INSERT INTO schema_migrations(version,name) VALUES(4,'safe_offline_cache_outbox')",
+                [],
+            )
+            .map_err(|_| "Migration impossible".to_string())?;
+            tx.commit()
+                .map_err(|_| "Migration impossible".to_string())?;
+        }
         Ok(())
     }
     pub fn validate_file(path: &Path) -> Result<(), String> {
@@ -145,10 +257,13 @@ CREATE INDEX idx_product_name ON products(name); CREATE INDEX idx_product_sku ON
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn temporary() -> (Database, PathBuf) {
+        let path = std::env::temp_dir().join(format!("maktaba-{}.db", uuid::Uuid::new_v4()));
+        (Database::temporary(path.clone()).unwrap(), path)
+    }
     #[test]
     fn migrations_create_tables() {
-        let p = std::env::temp_dir().join(format!("maktaba-{}.db", uuid::Uuid::new_v4()));
-        let db = Database::temporary(p.clone()).unwrap();
+        let (db, p) = temporary();
         let c = db.connect().unwrap();
         let n: i64 = c
             .query_row(
@@ -158,6 +273,54 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+        drop(c);
+        std::fs::remove_file(p).ok();
+    }
+
+    #[test]
+    fn offline_outbox_enforces_unique_key_and_valid_status() {
+        let (db, p) = temporary();
+        let c = db.connect().unwrap();
+        let insert = |id: &str, key: &str, status: &str| {
+            c.execute("INSERT INTO offline_outbox(id,operation_type,idempotency_key,payload_json,status,created_at,updated_at) VALUES(?1,'cash_sale',?2,'{}',?3,'2026-01-01','2026-01-01')", rusqlite::params![id,key,status])
+        };
+        assert_eq!(insert("one", "key", "pending").unwrap(), 1);
+        assert!(insert("two", "key", "pending").is_err());
+        assert!(insert("three", "key-three", "unknown").is_err());
+        drop(c);
+        std::fs::remove_file(p).ok();
+    }
+
+    #[test]
+    fn offline_outbox_pending_order_is_deterministic() {
+        let (db, p) = temporary();
+        let c = db.connect().unwrap();
+        for (id, key, created) in [("later", "b", "2026-01-02"), ("first", "a", "2026-01-01")] {
+            c.execute("INSERT INTO offline_outbox(id,operation_type,idempotency_key,payload_json,status,created_at,updated_at) VALUES(?1,'cash_sale',?2,'{}','pending',?3,?3)", rusqlite::params![id,key,created]).unwrap();
+        }
+        let first: String = c.query_row("SELECT id FROM offline_outbox WHERE status='pending' ORDER BY created_at,id LIMIT 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(first, "first");
+        drop(c);
+        std::fs::remove_file(p).ok();
+    }
+
+    #[test]
+    fn offline_cache_upsert_and_barcode_query_survive_reopen() {
+        let (db, p) = temporary();
+        {
+            let c = db.connect().unwrap();
+            c.execute("INSERT INTO offline_products(server_id,barcode,internal_barcode,sku,name,product_type,sale_price_cents,stock_quantity,is_active,payload_json,updated_at) VALUES(9,'6111','INT9','SKU9','Cahier','physical_product',1200,4,1,'{\"id\":9}','2026-01-01')", []).unwrap();
+        }
+        let reopened = Database::temporary(p.clone()).unwrap();
+        let c = reopened.connect().unwrap();
+        let id: i64 = c
+            .query_row(
+                "SELECT server_id FROM offline_products WHERE barcode=?1",
+                ["6111"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(id, 9);
         drop(c);
         std::fs::remove_file(p).ok();
     }

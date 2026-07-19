@@ -14,10 +14,11 @@ import {
   Routes,
   useLocation,
 } from "react-router-dom";
-import type { SafeUser } from "@maktaba/shared-types";
+import type { RegisterStatus, SafeUser } from "@maktaba/shared-types";
 import { request, AuthResponse, ApiFailure } from "./api";
 import { initializeAuth, resetAuthInitialization } from "./auth-bootstrap";
 import { singleFlight } from "./single-flight";
+import { checkConnection, isTauriRuntime, refreshOfflineCache } from "./offline-pos";
 const Dashboard = lazy(() => import("./Dashboard"));
 const phase2 = () => import("./Phase2");
 const CategoriesPage = lazy(() =>
@@ -77,6 +78,9 @@ const PosPage = lazy(() => phase3().then((m) => ({ default: m.PosPage })));
 const SalesPage = lazy(() => phase3().then((m) => ({ default: m.SalesPage })));
 const SaleDetails = lazy(() =>
   phase3().then((m) => ({ default: m.SaleDetails })),
+);
+const OfflineQueuePage = lazy(() =>
+  phase3().then((m) => ({ default: m.OfflineQueuePage })),
 );
 const phase4 = () => import("./Phase4");
 const SuppliersPage = lazy(() =>
@@ -144,7 +148,7 @@ function field(f: FormData, n: string) {
 export default function App() {
   const [user, setUser] = useState<SafeUser | null | undefined>(),
     [needsOwner, setNeedsOwner] = useState(false),
-    [offline, setOffline] = useState(!navigator.onLine),
+    [offline, setOffline] = useState(false),
     [loggingOut, setLoggingOut] = useState(false),
     [logoutError, setLogoutError] = useState("");
   const logoutAction = useRef<() => Promise<void>>(undefined);
@@ -160,14 +164,15 @@ export default function App() {
         setUser(null);
       } else {
         setOffline(true);
-        setUser(null);
+        setUser((current) => (current === undefined ? null : current));
       }
     }
   }, []);
   useEffect(() => {
     void refresh();
     const online = () => void refresh(),
-      off = () => setOffline(true);
+      off = () => void checkConnection().then((state) => setOffline(state === "offline"));
+    const timer = window.setInterval(off, 30_000);
     window.addEventListener("online", online);
     window.addEventListener("offline", off);
     const expired = () => {
@@ -179,8 +184,15 @@ export default function App() {
       window.removeEventListener("online", online);
       window.removeEventListener("offline", off);
       window.removeEventListener("session-expired", expired);
+      window.clearInterval(timer);
     };
   }, [refresh]);
+  useEffect(() => {
+    if (!user || offline || !isTauriRuntime()) return;
+    void request<RegisterStatus>("/register/status")
+      .then((register) => refreshOfflineCache({ isOpen: register.isOpen, sessionId: register.sessionId }))
+      .catch(() => undefined);
+  }, [offline, user]);
   if (user === undefined)
     return <div className="center">Initialisation sécurisée…</div>;
   const retry = () => {
@@ -205,7 +217,8 @@ export default function App() {
     }
   });
   const logout = () => logoutAction.current!();
-  if (offline) return <Offline retry={retry} />;
+  if (offline && (user === undefined || user === null))
+    return <Offline retry={retry} />;
   if (needsOwner)
     return (
       <Onboarding
@@ -241,6 +254,7 @@ export default function App() {
         logout={logout}
         loggingOut={loggingOut}
         logoutError={logoutError}
+        offline={offline}
       />
     </BrowserRouter>
   );
@@ -473,11 +487,13 @@ function Layout({
   logout,
   loggingOut,
   logoutError,
+  offline,
 }: {
   user: SafeUser;
   logout: () => void;
   loggingOut: boolean;
   logoutError: string;
+  offline: boolean;
 }) {
   const [menu, setMenu] = useState(false),
     loc = useLocation();
@@ -504,6 +520,9 @@ function Layout({
           )}
           {user.permissions.includes("pos.use") && (
             <NavLink to="/pos">Point de vente</NavLink>
+          )}
+          {isTauriRuntime() && user.permissions.includes("pos.use") && (
+            <NavLink to="/offline-queue">Opérations hors ligne</NavLink>
           )}
           {user.permissions.includes("sales.view") && (
             <NavLink to="/sales">Ventes</NavLink>
@@ -549,11 +568,22 @@ function Layout({
         </footer>
       </aside>
       <div className="main">
+        {offline && (
+          <div className="offline-banner" role="status">
+            Mode hors ligne — certaines fonctions sont indisponibles.
+          </div>
+        )}
         <header>
           <button onClick={() => setMenu(!menu)}>☰</button>
           <span>Connexion sécurisée</span>
         </header>
-        <Routes>
+        {offline && !["/pos", "/offline-queue"].includes(loc.pathname) ? (
+          <main className="page">
+            <h1>Fonction indisponible hors ligne</h1>
+            <p>Reconnectez-vous au serveur. Seules les ventes comptant avec un cache valide sont disponibles dans l’application de bureau.</p>
+            <NavLink to="/pos">Ouvrir le point de vente</NavLink>
+          </main>
+        ) : <Routes>
           <Route
             path="/"
             element={
@@ -735,6 +765,14 @@ function Layout({
             element={
               <Lazy>
                 <PosPage user={user} />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/offline-queue"
+            element={
+              <Lazy>
+                <OfflineQueuePage />
               </Lazy>
             }
           />
@@ -986,7 +1024,7 @@ function Layout({
           />
           <Route path="/forbidden" element={<State title="Accès interdit" />} />
           <Route path="*" element={<State title="Page introuvable" />} />
-        </Routes>
+        </Routes>}
       </div>
     </div>
   );

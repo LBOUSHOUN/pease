@@ -447,6 +447,12 @@ export async function registerPhase3(app: FastifyInstance) {
     async (req, reply) => {
       const p = saleCreateSchema.safeParse(req.body);
       if (!p.success) return bad(reply, "Vente invalide.");
+      const headerKey = req.headers["idempotency-key"];
+      if (
+        headerKey !== undefined &&
+        (typeof headerKey !== "string" || headerKey !== p.data.idempotencyKey)
+      )
+        return bad(reply, "La clé d’idempotence ne correspond pas à la vente.");
       const x = p.data,
         merged = new Map<number, number>();
       for (const line of x.items)

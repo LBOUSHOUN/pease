@@ -260,6 +260,17 @@ footer {
 .main {
   grid-column: 2;
 }
+.offline-banner {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  padding: 0.65rem 1rem;
+  background: #fff4d6;
+  border-bottom: 1px solid #d69e2e;
+  color: #6b4600;
+  font-weight: 700;
+  text-align: center;
+}
 .main > header {
   height: 64px;
   background: white;

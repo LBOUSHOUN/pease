@@ -99,6 +99,7 @@ export async function buildApp() {
     reply.code(status).send({ ...normalized, requestId: req.id });
   });
   app.get("/health", async () => ({ status: "ok" }));
+  app.get("/api/health", async () => ({ status: "ok" }));
   app.get("/ready", async (_req, reply) => {
     try {
       await sql`select 1`;

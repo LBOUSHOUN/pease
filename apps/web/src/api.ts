@@ -1,4 +1,5 @@
 import type { ApiError, SafeUser } from "@maktaba/shared-types";
+import { isTauri } from "@tauri-apps/api/core";
 
 export type ApiRequest = Omit<RequestInit, "body"> & { json?: unknown };
 export class ApiFailure extends Error {
@@ -36,7 +37,11 @@ export function resolveApiBaseUrl(context: ApiBaseContext = {}): string {
   const browserProtocol =
     typeof window !== "undefined" ? window.location.protocol : undefined;
   const activeProtocol = protocol ?? browserProtocol;
-  return activeProtocol === "tauri:" ? "http://localhost:3000/api" : "/api";
+  if (activeProtocol === "tauri:" || isTauri()) {
+    if (env.DEV === true) return "http://localhost:3000/api";
+    throw new Error("VITE_API_URL doit être configurée pour l’application de bureau.");
+  }
+  return "/api";
 }
 
 export function buildApiUrl(path: string, context: ApiBaseContext = {}): string {
@@ -57,7 +62,7 @@ function normalizedError(
   const loginFailure = status === 401 && candidate.code === "BAD_CREDENTIALS";
   const safeServerMessage =
     typeof candidate.message === "string" &&
-    ["NOT_FOUND", "CONFLICT", "INACTIVE_USER", "PASSWORD_CHANGE_REQUIRED"].includes(
+    ["NOT_FOUND", "CONFLICT", "VALIDATION_ERROR", "INACTIVE_USER", "PASSWORD_CHANGE_REQUIRED"].includes(
       candidate.code ?? "",
     )
       ? candidate.message

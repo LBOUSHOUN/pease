@@ -2,13 +2,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApiUrl, request, resolveApiBaseUrl } from "./api";
 afterEach(() => vi.unstubAllGlobals());
 describe("API client", () => {
-  it("uses the desktop API origin when running inside Tauri", () => {
+  it("uses localhost for desktop development only", () => {
     expect(
-      resolveApiBaseUrl({ env: {}, location: { protocol: "tauri:" } }),
+      resolveApiBaseUrl({ env: { DEV: true }, location: { protocol: "tauri:" } }),
     ).toBe("http://localhost:3000/api");
-    expect(buildApiUrl("/auth/me", { env: {}, location: { protocol: "tauri:" } })).toBe(
+    expect(buildApiUrl("/auth/me", { env: { DEV: true }, location: { protocol: "tauri:" } })).toBe(
       "http://localhost:3000/api/auth/me",
     );
+  });
+
+  it("requires an explicit API URL for production desktop builds", () => {
+    expect(() => resolveApiBaseUrl({ env: {}, location: { protocol: "tauri:" } })).toThrow("VITE_API_URL");
   });
 
   it("uses the configured VITE_API_URL when provided", () => {
