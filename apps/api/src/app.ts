@@ -51,11 +51,9 @@ export async function buildApp() {
   };
   const allowedOrigins = [
     config.APP_ORIGIN,
-    "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "http://localhost:1420",
-    "http://127.0.0.1:1420",
     "tauri://localhost",
+    "http://tauri.localhost",
   ];
   await app.register(cookie);
   await app.register(helmet);

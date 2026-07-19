@@ -87,7 +87,7 @@ pub fn save_worker(
             .temporary_password
             .ok_or("Mot de passe temporaire obligatoire")?;
         if !strong(&password) {
-            return Err("Mot de passe temporaire trop faible".into());
+            return Err("Le mot de passe est requis.".into());
         }
         let hash = hash_password(&password)?;
         tx.execute("INSERT INTO users(full_name,username,email,phone,password_hash,role,is_active,must_change_password,created_by)VALUES(?1,?2,?3,?4,?5,?6,?7,1,?8)",params![input.full_name.trim(),input.username.trim(),text(input.email),text(input.phone),hash,input.role,input.is_active,actor.id]).map_err(|_|"Nom d’utilisateur ou e-mail déjà utilisé".to_string())?;
@@ -116,7 +116,7 @@ pub fn reset_worker_password(
         format!("Mkt{}aA9", u64::from_le_bytes(b))
     });
     if !strong(&temporary) {
-        return Err("Mot de passe temporaire trop faible".into());
+        return Err("Le mot de passe est requis.".into());
     }
     c.execute("UPDATE users SET password_hash=?1,must_change_password=1,updated_at=CURRENT_TIMESTAMP WHERE id=?2",params![hash_password(&temporary)?,id]).map_err(db_err)?;
     c.execute("INSERT INTO audit_logs(user_id,action,entity_type,entity_id)VALUES(?1,'worker.password_reset','user',?2)",params![actor.id,id]).map_err(db_err)?;
@@ -130,7 +130,7 @@ pub fn change_current_password(
     session: State<Session>,
 ) -> Result<SafeUser, String> {
     if !strong(&new_password) {
-        return Err("Le nouveau mot de passe est trop faible".into());
+        return Err("Le mot de passe est requis.".into());
     }
     let mut guard = session
         .0

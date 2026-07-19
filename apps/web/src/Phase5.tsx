@@ -34,13 +34,18 @@ export function EmployeesPage({ user }: { user: SafeUser }) {
   const [search, setSearch] = useState(""),
     [role, setRole] = useState(""),
     [status, setStatus] = useState("all"),
+    [page, setPage] = useState(1),
     [data, setData] = useState<EmployeeListResponse>(),
     [error, setError] = useState("");
   const q = useDebounce(search);
   useEffect(() => {
-    const c = new AbortController();
+    const c = new AbortController(),
+      params = new URLSearchParams({ page: String(page), pageSize: "25" });
+    if (q.trim()) params.set("search", q.trim());
+    if (role) params.set("role", role);
+    if (status !== "all") params.set("status", status);
     request<EmployeeListResponse>(
-      `/users?search=${encodeURIComponent(q)}&role=${role}&status=${status}&pageSize=50`,
+      `/users?${params}`,
       { signal: c.signal },
     )
       .then(setData)
@@ -48,7 +53,7 @@ export function EmployeesPage({ user }: { user: SafeUser }) {
         if (e.name !== "AbortError") setError(errorText(e));
       });
     return () => c.abort();
-  }, [q, role, status]);
+  }, [q, role, status, page]);
   return (
     <main className="page">
       <div className="title">
@@ -79,10 +84,10 @@ export function EmployeesPage({ user }: { user: SafeUser }) {
           <option value="inactive">Inactifs</option>
         </select>
       </div>
-      {data?.rows.length === 0 ? (
-        <p>Aucun employé.</p>
+      {!data && !error ? <div className="loading-state">Chargement des employés…</div> : data?.rows.length === 0 ? (
+        <div className="empty-state">Aucun employé ne correspond aux filtres sélectionnés.</div>
       ) : (
-        <table>
+        <div className="table"><table>
           <thead>
             <tr>
               <th>Nom</th>
@@ -90,6 +95,7 @@ export function EmployeesPage({ user }: { user: SafeUser }) {
               <th>Rôle</th>
               <th>État</th>
               <th>Dernière connexion</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -100,17 +106,19 @@ export function EmployeesPage({ user }: { user: SafeUser }) {
                 </td>
                 <td>{x.username}</td>
                 <td>{x.role}</td>
-                <td>{x.isActive ? "Actif" : "Inactif"}</td>
+                <td><span className={`badge ${x.isActive ? "ok" : "off"}`}>{x.isActive ? "Actif" : "Inactif"}</span></td>
                 <td>
                   {x.lastLoginAt
                     ? new Date(x.lastLoginAt).toLocaleString("fr-MA")
                     : "Jamais"}
                 </td>
+                <td><Link to={`/employees/${x.id}`}>Consulter</Link></td>
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
+      {data && data.totalPages > 1 && <div className="pager"><button className="secondary" disabled={page <= 1} onClick={() => setPage(page - 1)}>Précédent</button><span>Page {page} sur {data.totalPages}</span><button className="secondary" disabled={page >= data.totalPages} onClick={() => setPage(page + 1)}>Suivant</button></div>}
     </main>
   );
 }
@@ -120,7 +128,6 @@ export function EmployeeForm({ edit = false }: { edit?: boolean }) {
     nav = useNavigate(),
     [value, setValue] = useState<Employee>(),
     [error, setError] = useState(""),
-    [temporary, setTemporary] = useState(""),
     busy = useRef(false);
   useEffect(() => {
     if (edit)
@@ -138,17 +145,15 @@ export function EmployeeForm({ edit = false }: { edit?: boolean }) {
         username: f.get("username"),
         email: f.get("email") || null,
         role: f.get("role"),
+        ...(!edit ? { password: f.get("password") } : {}),
       };
     try {
       if (edit) {
         await request(`/users/${id}`, { method: "PATCH", json });
         nav(`/employees/${id}`);
       } else {
-        const r = await request<{ user: Employee; temporaryPassword: string }>(
-          "/users",
-          { method: "POST", json },
-        );
-        setTemporary(r.temporaryPassword);
+        await request<{ user: Employee }>("/users", { method: "POST", json });
+        nav("/employees");
       }
     } catch (x) {
       setError(errorText(x));
@@ -156,18 +161,6 @@ export function EmployeeForm({ edit = false }: { edit?: boolean }) {
       busy.current = false;
     }
   };
-  if (temporary)
-    return (
-      <main className="page narrow">
-        <h1>Employé créé</h1>
-        <div className="notice">
-          Mot de passe temporaire affiché une seule fois :
-        </div>
-        <code className="temporary-password">{temporary}</code>
-        <p>L’employé devra le changer à sa première connexion.</p>
-        <button onClick={() => nav("/employees")}>Terminer</button>
-      </main>
-    );
   if (edit && !value)
     return (
       <main className="page">
@@ -203,6 +196,7 @@ export function EmployeeForm({ edit = false }: { edit?: boolean }) {
           <option value="stock_worker">Responsable stock</option>
           <option value="global_admin">Administrateur global</option>
         </select>
+        {!edit && <label>Mot de passe<input name="password" type="password" required /></label>}
         {value?.role === "global_admin" && (
           <div className="notice">
             Le dernier administrateur global actif est protégé.
@@ -299,7 +293,8 @@ export function EmployeeDetails({ user }: { user: SafeUser }) {
 
 export function PasswordReset() {
   const { id } = useParams(),
-    [temporary, setTemporary] = useState(""),
+    [password, setPassword] = useState(""),
+    [done, setDone] = useState(false),
     [error, setError] = useState(""),
     busy = useRef(false);
   const reset = async () => {
@@ -312,11 +307,11 @@ export function PasswordReset() {
       return;
     busy.current = true;
     try {
-      const r = await request<{ temporaryPassword: string }>(
+      await request<{ ok: true }>(
         `/users/${id}/reset-password`,
-        { method: "POST", json: { confirmation: true } },
+        { method: "POST", json: { confirmation: true, password } },
       );
-      setTemporary(r.temporaryPassword);
+      setDone(true);
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -327,13 +322,9 @@ export function PasswordReset() {
     <main className="page narrow">
       <h1>Réinitialisation du mot de passe</h1>
       <ErrorBox value={error} />
-      {temporary ? (
+      {done ? (
         <>
-          <div className="notice">
-            Copiez maintenant ce mot de passe temporaire. Il disparaîtra en
-            quittant cette page.
-          </div>
-          <code className="temporary-password">{temporary}</code>
+          <div className="notice">Mot de passe réinitialisé. Les anciennes sessions ont été révoquées.</div>
           <Link className="button" to={`/employees/${id}`}>
             Terminer
           </Link>
@@ -344,7 +335,8 @@ export function PasswordReset() {
             Les sessions actives seront immédiatement révoquées et le changement
             sera obligatoire à la prochaine connexion.
           </p>
-          <button onClick={reset}>Confirmer la réinitialisation</button>
+          <label>Nouveau mot de passe<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
+          <button onClick={reset} disabled={!password.trim()}>Confirmer la réinitialisation</button>
         </>
       )}
     </main>
@@ -363,14 +355,12 @@ export function AuditPage() {
   const q = useDebounce(search);
   useEffect(() => {
     const c = new AbortController(),
-      params = new URLSearchParams({
-        search: q,
-        action,
-        entityType: entity,
-        startDate: start,
-        endDate: end,
-        pageSize: "50",
-      });
+      params = new URLSearchParams({ pageSize: "50" });
+    if (q.trim()) params.set("search", q.trim());
+    if (action.trim()) params.set("action", action.trim());
+    if (entity.trim()) params.set("entityType", entity.trim());
+    if (start) params.set("startDate", start);
+    if (end) params.set("endDate", end);
     request<AuditListResponse>(`/audit-logs?${params}`, { signal: c.signal })
       .then(setData)
       .catch((e) => {
@@ -409,31 +399,33 @@ export function AuditPage() {
           onChange={(e) => setEnd(e.target.value)}
         />
       </div>
-      {data?.rows.length === 0 ? (
-        <p>Aucun événement.</p>
+      {!data && !error ? <div className="loading-state">Chargement du journal…</div> : data?.rows.length === 0 ? (
+        <div className="empty-state">Aucune activité ne correspond aux filtres sélectionnés.</div>
       ) : (
-        <table>
+        <div className="table"><table>
           <thead>
             <tr>
               <th>Date</th>
               <th>Employé</th>
               <th>Action</th>
               <th>Entité</th>
+              <th>Identifiant</th>
+              <th>Détails</th>
             </tr>
           </thead>
           <tbody>
             {data?.rows.map((x) => (
-              <tr key={x.id} onClick={() => setSelected(x)}>
+              <tr key={x.id}>
                 <td>{new Date(x.createdAt).toLocaleString("fr-MA")}</td>
                 <td>{x.workerName || "Système"}</td>
-                <td>{x.action}</td>
-                <td>
-                  {x.entityType} {x.entityId ?? ""}
-                </td>
+                <td><span className="badge ok">{x.action}</span></td>
+                <td>{x.entityType}</td>
+                <td>{x.entityId ?? "—"}</td>
+                <td><button className="link" onClick={() => setSelected(x)}>Consulter</button></td>
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
       {selected && (
         <aside className="drawer">
@@ -447,30 +439,33 @@ export function AuditPage() {
 }
 
 export const reportKinds = [
-  { id: "sales", label: "Ventes", permission: "reports.view_sales" },
-  { id: "profit", label: "Bénéfice estimé", permission: "reports.view_profit" },
-  { id: "stock", label: "Stock", permission: "reports.view_stock" },
-  { id: "customers", label: "Clients", permission: "reports.view_customers" },
+  { id: "sales", label: "Ventes", description: "Analysez le chiffre d’affaires et les modes de paiement.", permission: "reports.view_sales" },
+  { id: "profit", label: "Bénéfice estimé", description: "Consultez la marge brute estimée sur les ventes.", permission: "reports.view_profit" },
+  { id: "stock", label: "Stock", description: "Suivez les quantités, ruptures et produits à réapprovisionner.", permission: "reports.view_stock" },
+  { id: "customers", label: "Clients", description: "Suivez les achats et les soldes clients.", permission: "reports.view_customers" },
   {
     id: "suppliers",
     label: "Fournisseurs",
+    description: "Consultez les achats et les dettes fournisseurs.",
     permission: "reports.view_suppliers",
   },
-  { id: "expenses", label: "Dépenses", permission: "reports.view_expenses" },
-  { id: "workers", label: "Employés", permission: "reports.view_workers" },
-  { id: "registers", label: "Caisses", permission: "reports.view_registers" },
+  { id: "expenses", label: "Dépenses", description: "Analysez les dépenses par période et catégorie.", permission: "reports.view_expenses" },
+  { id: "workers", label: "Employés", description: "Comparez l’activité enregistrée par employé.", permission: "reports.view_workers" },
+  { id: "registers", label: "Caisses", description: "Contrôlez les sessions et écarts de caisse.", permission: "reports.view_registers" },
 ];
 export function ReportsHub({ user }: { user: SafeUser }) {
   return (
     <main className="page">
-      <h1>Rapports</h1>
-      <div className="cards">
+      <div className="page-header"><div><h1>Rapports</h1><p>Choisissez une analyse pour piloter l’activité du magasin.</p></div></div>
+      <div className="report-grid">
         {reportKinds
           .filter((x) => has(user, x.permission))
           .map((x) => (
-            <Link className="card" key={x.id} to={`/reports/${x.id}`}>
+            <Link className="report-card" key={x.id} to={`/reports/${x.id}`}>
+              <span className="report-icon" aria-hidden="true">↗</span>
               <h2>{x.label}</h2>
-              <p>Données PostgreSQL paginées et export sécurisé.</p>
+              <p>{x.description}</p>
+              <span className="report-action">Ouvrir le rapport</span>
             </Link>
           ))}
       </div>
@@ -493,13 +488,10 @@ export function ReportPage({ kind, user }: { kind: string; user: SafeUser }) {
       return;
     }
     const c = new AbortController(),
-      params = new URLSearchParams({
-        preset,
-        startDate: start,
-        endDate: end,
-        search: q,
-        pageSize: "50",
-      });
+      params = new URLSearchParams({ preset, pageSize: "50" });
+    if (preset === "custom" && start) params.set("startDate", start);
+    if (preset === "custom" && end) params.set("endDate", end);
+    if (q.trim()) params.set("search", q.trim());
     request<ReportResponse>(`/reports/${kind}?${params}`, { signal: c.signal })
       .then((x) => {
         setData(x);
@@ -511,12 +503,10 @@ export function ReportPage({ kind, user }: { kind: string; user: SafeUser }) {
     return () => c.abort();
   }, [kind, preset, start, end, q]);
   const exportCsv = () => {
-    const params = new URLSearchParams({
-      preset,
-      startDate: start,
-      endDate: end,
-      search: q,
-    });
+    const params = new URLSearchParams({ preset });
+    if (preset === "custom" && start) params.set("startDate", start);
+    if (preset === "custom" && end) params.set("endDate", end);
+    if (q.trim()) params.set("search", q.trim());
     window.location.assign(`/api/exports/${kind}.csv?${params}`);
   };
   const label = reportKinds.find((x) => x.id === kind)?.label ?? kind,

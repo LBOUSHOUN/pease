@@ -10,7 +10,7 @@ beforeAll(async () => {
   process.env.DATABASE_URL = testUrl;
   process.env.SESSION_PEPPER =
     "test-pepper-that-is-longer-than-thirty-two-characters";
-  process.env.APP_ORIGIN = "http://localhost:5173";
+  process.env.APP_ORIGIN = "http://127.0.0.1:5173";
   process.env.NODE_ENV = "test";
   process.env.LOG_LEVEL = "silent";
   process.env.LOGIN_RATE_LIMIT = "8";
@@ -1416,10 +1416,11 @@ describe("online administration, reports, exports and settings", () => {
           username: "cashier5",
           email: "cashier5@example.com",
           role: "cashier",
+          password: "1",
         },
       });
     expect(created.statusCode).toBe(201);
-    expect(created.json().temporaryPassword).toMatch(/[A-Z]/);
+    expect(created.json()).not.toHaveProperty("temporaryPassword");
     expect(JSON.stringify(created.json())).not.toContain("passwordHash");
     const id = created.json().user.id,
       login = await app.inject({
@@ -1427,7 +1428,7 @@ describe("online administration, reports, exports and settings", () => {
         url: "/api/auth/login",
         payload: {
           login: "cashier5",
-          password: created.json().temporaryPassword,
+          password: "1",
         },
       });
     expect(login.statusCode).toBe(200);
@@ -1442,7 +1443,7 @@ describe("online administration, reports, exports and settings", () => {
       method: "POST",
       url: `/api/users/${id}/reset-password`,
       headers: { cookie: admin },
-      payload: { confirmation: true },
+      payload: { confirmation: true, password: "0" },
     });
     expect(reset.statusCode).toBe(200);
     expect(
@@ -1460,7 +1461,7 @@ describe("online administration, reports, exports and settings", () => {
           url: "/api/auth/login",
           payload: {
             login: "cashier5",
-            password: reset.json().temporaryPassword,
+            password: "0",
           },
         })
       ).statusCode,
@@ -1480,6 +1481,7 @@ describe("online administration, reports, exports and settings", () => {
         username: "manager5",
         email: "manager5@example.com",
         role: "manager",
+        password: "1",
       };
     expect(
       (

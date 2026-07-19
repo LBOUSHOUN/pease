@@ -43,10 +43,13 @@ export default defineConfig({
     }),
   ],
   server: {
+    host: "127.0.0.1",
     port: 5173,
+    strictPort: true,
+    open: false,
     proxy: {
-      "/api": "http://localhost:3000",
-      "/health": "http://localhost:3000",
+      "/api": "http://127.0.0.1:3000",
+      "/health": "http://127.0.0.1:3000",
     },
   },
 });

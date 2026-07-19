@@ -1,5 +1,7 @@
 import { z } from "zod";
-const strong = z.string().min(8).regex(/[a-z]/).regex(/[A-Z]/).regex(/[0-9]/);
+const requiredPassword = z.string().refine((value) => value.trim().length > 0, {
+  message: "Le mot de passe est requis.",
+});
 export const ownerSchema = z.object({
   shopName: z.string().trim().min(1),
   fullName: z.string().trim().min(2),
@@ -9,7 +11,7 @@ export const ownerSchema = z.object({
     .min(3)
     .transform((x) => x.toLowerCase()),
   email: z.string().trim().toLowerCase().email().optional().or(z.literal("")),
-  password: strong,
+  password: requiredPassword,
   barcodePrefix: z
     .string()
     .trim()
@@ -25,7 +27,7 @@ export const loginSchema = z.object({
 });
 export const changePasswordSchema = z.object({
   currentPassword: z.string().min(1),
-  newPassword: strong,
+  newPassword: requiredPassword,
 });
 export const paginationSchema = z.object({
   page: z.coerce.number().int().positive().default(1),
@@ -373,7 +375,7 @@ const roleSchema = z.enum([
 ]);
 export const userFiltersSchema = paginationSchema.extend({
   search: z.string().trim().max(100).default(""),
-  role: roleSchema.optional(),
+  role: z.union([roleSchema, z.literal("all")]).default("all"),
   status: z.enum(["all", "active", "inactive"]).default("all"),
 });
 export const userCreateSchema = z.object({
@@ -385,9 +387,10 @@ export const userCreateSchema = z.object({
     .regex(/^[a-z0-9._-]{3,50}$/),
   email: z.string().trim().toLowerCase().email().max(200).nullable().optional(),
   role: roleSchema,
+  password: requiredPassword,
 });
-export const userUpdateSchema = userCreateSchema.partial();
-export const passwordResetSchema = z.object({ confirmation: z.literal(true) });
+export const userUpdateSchema = userCreateSchema.omit({ password: true }).partial();
+export const passwordResetSchema = z.object({ confirmation: z.literal(true), password: requiredPassword });
 export const forcePasswordChangeSchema = z.object({ required: z.boolean() });
 export const auditFiltersSchema = paginationSchema.extend({
   userId: z.coerce.number().int().positive().optional(),

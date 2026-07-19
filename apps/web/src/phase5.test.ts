@@ -45,6 +45,7 @@ describe("Phase 5 administration and reporting UI rules", () => {
         username: "cashier.1",
         email: null,
         role: "cashier",
+        password: "1",
       }).success,
     ).toBe(true);
     expect(
@@ -120,10 +121,15 @@ describe("Phase 5 administration and reporting UI rules", () => {
     expect(
       { role: "global_admin", isActive: true }.role === "global_admin",
     ).toBe(true));
-  it("keeps temporary password in ephemeral component state", () => {
-    let temporary = "Secret";
-    temporary = "";
-    expect(temporary).toBe("");
+  it("requires a non-empty employee password", () => {
+    const employee = {
+      displayName: "Caissier",
+      username: "cashier.2",
+      email: null,
+      role: "cashier",
+    };
+    expect(userCreateSchema.safeParse({ ...employee, password: "1" }).success).toBe(true);
+    expect(userCreateSchema.safeParse({ ...employee, password: " " }).success).toBe(false);
   });
   it("requires explicit restore confirmation", () =>
     expect("RESTORE").toBe("RESTORE"));

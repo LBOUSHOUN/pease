@@ -320,7 +320,7 @@ function Onboarding({ done }: { done: (u: SafeUser) => void }) {
         <input
           name="password"
           type="password"
-          placeholder="Mot de passe fort"
+          placeholder="Mot de passe"
           required
         />
         <input
@@ -337,6 +337,7 @@ function Onboarding({ done }: { done: (u: SafeUser) => void }) {
 function Login({ done }: { done: (u: SafeUser) => void }) {
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
+    [showPassword, setShowPassword] = useState(false),
     [blockedUntil, setBlockedUntil] = useState(0),
     [clock, setClock] = useState(Date.now());
   useEffect(() => {
@@ -383,13 +384,10 @@ function Login({ done }: { done: (u: SafeUser) => void }) {
           Identifiant ou e-mail
           <input name="login" autoComplete="username" autoFocus required />
         </label>
-        <input
-          name="password"
-          type="password"
-          aria-label="Mot de passe"
-          autoComplete="current-password"
-          required
-        />
+        <label>
+          Mot de passe
+          <span className="password-field"><input name="password" type={showPassword ? "text" : "password"} autoComplete="current-password" required /><button type="button" className="password-toggle" aria-label={showPassword ? "Masquer le mot de passe" : "Afficher le mot de passe"} onClick={() => setShowPassword(!showPassword)}>{showPassword ? "Masquer" : "Afficher"}</button></span>
+        </label>
         <button disabled={busy || Date.now() < blockedUntil} aria-busy={busy}>
           {busy
             ? "Connexion…"
@@ -498,13 +496,21 @@ function Layout({
   const [menu, setMenu] = useState(false),
     loc = useLocation();
   useEffect(() => setMenu(false), [loc]);
+  useEffect(() => {
+    if (!menu) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenu(false);
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [menu]);
   return (
     <div className="app">
-      <aside className={menu ? "open" : ""}>
+      <aside id="app-sidebar" className={menu ? "open" : ""} aria-label="Navigation principale">
         <div className="brand">
           Maktaba <small>Version en ligne</small>
         </div>
-        <nav>
+        <nav aria-label="Modules">
           <NavLink to="/">Tableau de bord</NavLink>
           {user.permissions.includes("products.view") && (
             <NavLink to="/products">Produits</NavLink>
@@ -567,6 +573,7 @@ function Layout({
           </button>
         </footer>
       </aside>
+      {menu && <button className="sidebar-overlay" aria-label="Fermer la navigation" onClick={() => setMenu(false)} />}
       <div className="main">
         {offline && (
           <div className="offline-banner" role="status">
@@ -574,9 +581,11 @@ function Layout({
           </div>
         )}
         <header>
-          <button onClick={() => setMenu(!menu)}>☰</button>
-          <span>Connexion sécurisée</span>
+          <button className="menu-toggle" aria-label="Ouvrir la navigation" aria-controls="app-sidebar" aria-expanded={menu} onClick={() => setMenu(!menu)}>☰</button>
+          <span className="topbar-title">Maktaba POS</span>
+          <span className="connection-status">Connexion sécurisée</span>
         </header>
+        <div className="page-scroll">
         {offline && !["/pos", "/offline-queue"].includes(loc.pathname) ? (
           <main className="page">
             <h1>Fonction indisponible hors ligne</h1>
@@ -1025,6 +1034,7 @@ function Layout({
           <Route path="/forbidden" element={<State title="Accès interdit" />} />
           <Route path="*" element={<State title="Page introuvable" />} />
         </Routes>}
+        </div>
       </div>
     </div>
   );

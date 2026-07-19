@@ -5,27 +5,22 @@ import { request } from "./api";
 import { centsToMad } from "./money";
 
 export default function Dashboard({ user }: { user: SafeUser }) {
-  const [data, setData] = useState<DashboardReport>(),
-    [error, setError] = useState("");
+  const [data, setData] = useState<DashboardReport>();
+  const [error, setError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
-    request<DashboardReport>("/reports/dashboard", {
-      signal: controller.signal,
-    })
+    request<DashboardReport>("/reports/dashboard", { signal: controller.signal })
       .then(setData)
-      .catch((e) => {
-        if (e.name !== "AbortError")
-          setError(e instanceof Error ? e.message : "Erreur");
+      .catch((reason) => {
+        if (reason.name !== "AbortError") setError(reason instanceof Error ? reason.message : "Erreur");
       });
     return () => controller.abort();
   }, []);
   if (error)
-    return (
-      <main className="page">
-        <div className="error">{error}</div>
-      </main>
-    );
-  if (!data) return <main className="page">Chargement…</main>;
+    return <main className="page"><div className="error error-state" role="alert"><strong>Tableau de bord indisponible</strong><span>{error}</span></div></main>;
+  if (!data)
+    return <main className="page"><div className="loading-state" role="status">Chargement du tableau de bord…</div></main>;
+
   const cards: [string, string | number][] = [
     ["Ventes aujourd’hui", centsToMad(data.salesTodayCents)],
     ["Retours aujourd’hui", centsToMad(data.returnsTodayCents)],
@@ -38,35 +33,37 @@ export default function Dashboard({ user }: { user: SafeUser }) {
     ["Caisses ouvertes", data.openRegisters],
   ];
   if (data.estimatedProfitTodayCents !== null)
-    cards.splice(3, 0, [
-      "Marge brute estimée",
-      centsToMad(data.estimatedProfitTodayCents),
-    ]);
+    cards.splice(3, 0, ["Marge brute estimée", centsToMad(data.estimatedProfitTodayCents)]);
+
   return (
-    <main className="page">
-      <h1>Tableau de bord</h1>
-      <div className="metrics">
-        {cards.map(([label, value]) => (
-          <div className="card" key={label}>
-            <small>{label}</small>
-            <b>{value}</b>
-          </div>
-        ))}
+    <main className="page dashboard-page">
+      <div className="page-header">
+        <div><h1>Tableau de bord</h1><p>Vue d’ensemble de l’activité du magasin aujourd’hui.</p></div>
+        {user.permissions.includes("pos.use") && <Link className="button" to="/pos">Nouvelle vente</Link>}
       </div>
+      <section className="metrics" aria-label="Indicateurs principaux">
+        {cards.map(([label, value]) => (
+          <article className="metric-card" key={label}>
+            <span className="metric-label">{label}</span>
+            <strong className="metric-value">{value}</strong>
+          </article>
+        ))}
+      </section>
       {user.permissions.includes("sales.view") && (
-        <>
-          <h2>Ventes récentes</h2>
-          {data.recentSales.length === 0 ? (
-            <p>Aucune vente récente.</p>
-          ) : (
-            data.recentSales.map((s) => (
-              <p key={s.id}>
-                <Link to={`/sales/${s.id}`}>{s.saleNumber}</Link> ·{" "}
-                {centsToMad(s.totalCents)}
-              </p>
-            ))
+        <section className="section-card">
+          <div className="section-header">
+            <div><h2>Ventes récentes</h2><p>Dernières opérations enregistrées.</p></div>
+            <Link to="/sales">Voir toutes les ventes</Link>
+          </div>
+          {data.recentSales.length === 0 ? <div className="empty-state">Aucune vente récente.</div> : (
+            <div className="activity-list">{data.recentSales.map((sale) => (
+              <div className="activity-row" key={sale.id}>
+                <Link to={`/sales/${sale.id}`}>{sale.saleNumber}</Link>
+                <strong>{centsToMad(sale.totalCents)}</strong>
+              </div>
+            ))}</div>
           )}
-        </>
+        </section>
       )}
     </main>
   );

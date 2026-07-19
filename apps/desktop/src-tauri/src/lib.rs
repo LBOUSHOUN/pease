@@ -216,10 +216,7 @@ fn current(session: &State<Session>, permission: &str) -> Result<SafeUser, Strin
     Ok(u)
 }
 fn strong(p: &str) -> bool {
-    p.len() >= 8
-        && p.chars().any(char::is_uppercase)
-        && p.chars().any(char::is_lowercase)
-        && p.chars().any(|c| c.is_ascii_digit())
+    !p.trim().is_empty()
 }
 fn hash_password(p: &str) -> Result<String, String> {
     let salt = SaltString::generate(&mut OsRng);
@@ -276,7 +273,7 @@ fn create_owner(
         return Err("Veuillez remplir tous les champs obligatoires".into());
     }
     if !strong(&input.password) {
-        return Err("Le mot de passe doit contenir 8 caractères, une majuscule, une minuscule et un chiffre".into());
+        return Err("Le mot de passe est requis.".into());
     }
     let prefix = input.barcode_prefix.trim().to_uppercase();
     if prefix.len() < 2 || !prefix.chars().all(|c| c.is_ascii_alphanumeric()) {
@@ -1186,8 +1183,11 @@ mod tests {
     }
     #[test]
     fn password_strength() {
-        assert!(strong("Secret123"));
-        assert!(!strong("secret"))
+        for password in ["1", "0", "a", "12", "test"] {
+            assert!(strong(password));
+        }
+        assert!(!strong(""));
+        assert!(!strong("   "));
     }
     #[test]
     fn permissions_are_role_based() {

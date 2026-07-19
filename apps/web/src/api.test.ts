@@ -2,12 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApiUrl, request, resolveApiBaseUrl } from "./api";
 afterEach(() => vi.unstubAllGlobals());
 describe("API client", () => {
-  it("uses localhost for desktop development only", () => {
+  it("uses the canonical loopback host for desktop development", () => {
     expect(
       resolveApiBaseUrl({ env: { DEV: true }, location: { protocol: "tauri:" } }),
-    ).toBe("http://localhost:3000/api");
+    ).toBe("http://127.0.0.1:3000/api");
     expect(buildApiUrl("/auth/me", { env: { DEV: true }, location: { protocol: "tauri:" } })).toBe(
-      "http://localhost:3000/api/auth/me",
+      "http://127.0.0.1:3000/api/auth/me",
     );
   });
 

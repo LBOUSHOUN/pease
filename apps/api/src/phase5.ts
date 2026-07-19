@@ -46,7 +46,6 @@ const employee = (r: Row) => ({
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });
-const temporaryPassword = () => `${randomBytes(8).toString("base64url")}aA7!`;
 const safeMetadata = (value: unknown): Record<string, unknown> => {
   if (!value) return {};
 
@@ -389,10 +388,11 @@ export async function registerPhase5(app: FastifyInstance) {
       if (!parsed.success) return bad(reply, "Filtres invalides.");
       const p = parsed.data,
         q = `%${p.search}%`,
+        role = p.role === "all" ? null : p.role,
         offset = (p.page - 1) * p.pageSize,
         rows = await sql<
           Row[]
-        >`select *,count(*) over() total_count from users where (${p.search}='' or full_name ilike ${q} or username ilike ${q} or coalesce(email,'') ilike ${q}) and (${p.role ?? null}::text is null or role=${p.role ?? null}) and (${p.status}='all' or is_active=${p.status === "active"}) order by lower(full_name) limit ${p.pageSize} offset ${offset}`;
+        >`select *,count(*) over() total_count from users where (${p.search}='' or full_name ilike ${q} or username ilike ${q} or coalesce(email,'') ilike ${q}) and (${role}::text is null or role=${role}) and (${p.status}='all' or is_active=${p.status === "active"}) order by lower(full_name) limit ${p.pageSize} offset ${offset}`;
       return {
         rows: rows.map(employee),
         ...pages(Number(rows[0]?.total_count ?? 0), p.page, p.pageSize),
@@ -413,9 +413,8 @@ export async function registerPhase5(app: FastifyInstance) {
         req.user!.role !== "global_admin"
       )
         return bad(reply, "Rôle interdit.", 403);
-      const temp = temporaryPassword();
       try {
-        const passwordHash = await argon2.hash(temp),
+        const passwordHash = await argon2.hash(parsed.data.password),
           result = await sql.begin<{ value: Row }>(async (tx) => {
             const [u] = await tx<
               Row[]
@@ -425,7 +424,7 @@ export async function registerPhase5(app: FastifyInstance) {
           });
         return reply
           .code(201)
-          .send({ user: employee(result.value), temporaryPassword: temp });
+          .send({ user: employee(result.value) });
       } catch (e) {
         if ((e as { code?: string }).code === "23505")
           return bad(reply, "Nom d’utilisateur ou e-mail déjà utilisé.", 409);
@@ -545,8 +544,7 @@ export async function registerPhase5(app: FastifyInstance) {
       const id = Number((req.params as { id: string }).id),
         parsed = passwordResetSchema.safeParse(req.body);
       if (!parsed.success) return bad(reply, "Confirmation requise.");
-      const temp = temporaryPassword(),
-        hash = await argon2.hash(temp);
+      const hash = await argon2.hash(parsed.data.password);
       const result = await sql.begin(async (tx) => {
         const [u] = await tx<
           Row[]
@@ -557,7 +555,7 @@ export async function registerPhase5(app: FastifyInstance) {
         return u;
       });
       return result
-        ? { temporaryPassword: temp }
+        ? { ok: true }
         : bad(reply, "Employé introuvable.", 404);
     },
   );

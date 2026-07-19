@@ -38,7 +38,7 @@ export function resolveApiBaseUrl(context: ApiBaseContext = {}): string {
     typeof window !== "undefined" ? window.location.protocol : undefined;
   const activeProtocol = protocol ?? browserProtocol;
   if (activeProtocol === "tauri:" || isTauri()) {
-    if (env.DEV === true) return "http://localhost:3000/api";
+    if (env.DEV === true) return "http://127.0.0.1:3000/api";
     throw new Error("VITE_API_URL doit être configurée pour l’application de bureau.");
   }
   return "/api";
