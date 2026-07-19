@@ -40,10 +40,12 @@ export const isEditable = (target: EventTarget | null) => {
     return false;
   const element = target as EventTarget & {
     matches: (selector: string) => boolean;
+    closest?: (selector: string) => Element | null;
     isContentEditable?: boolean;
   };
   return (
-    element.matches("input,textarea,select") ||
+    element.matches("input,textarea,select,[contenteditable='true']") ||
+    Boolean(element.closest?.("dialog form,[role='dialog'] form")) ||
     element.isContentEditable === true
   );
 };

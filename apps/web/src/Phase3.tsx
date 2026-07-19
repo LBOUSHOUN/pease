@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type {
   Customer,
@@ -18,8 +18,8 @@ import type {
 } from "@maktaba/shared-types";
 import { request } from "./api";
 import { centsToMad, madToCents } from "./money";
-import { useScanner } from "./use-scanner";
 import CameraScanner from "./CameraScanner";
+import { enqueueGlobalScan, globalScanQueue } from "./global-scanner";
 import {
   addCartProduct,
   CartLine,
@@ -878,10 +878,13 @@ export function PosPage({ user }: { user: SafeUser }) {
     [mode, setMode] = useState<"cash" | "credit" | "partial">("cash"),
     [cash, setCash] = useState(""),
     [status, setStatus] = useState<RegisterStatus>(),
+    [registerLoaded, setRegisterLoaded] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [sale, setSale] = useState<SaleResult | { id: string; saleNumber: string; totalCents: number }>(),
     [camera, setCamera] = useState(false),
+    [scannerState, setScannerState] = useState("Scanner prêt"),
+    [lastScannedCode, setLastScannedCode] = useState(""),
     [connectionState, setConnectionState] = useState<"online" | "offline" | "checking">("checking"),
     [queueSummary, setQueueSummary] = useState<OfflineQueueSummary>({ pendingCount: 0, syncingCount: 0, syncedCount: 0, rejectedCount: 0 }),
     nav = useNavigate(),
@@ -912,10 +915,11 @@ export function PosPage({ user }: { user: SafeUser }) {
     return () => { active = false; window.clearInterval(timer); window.removeEventListener("online", update); window.removeEventListener("offline", update); };
   }, []);
   useEffect(() => {
+    setRegisterLoaded(false);
     if (connectionState === "offline") {
       void getOfflineCacheStatus().then((cached) => {
         if (cached?.register) setStatus({ isOpen: cached.register.isOpen, sessionId: cached.register.sessionId } as RegisterStatus);
-      });
+      }).finally(() => setRegisterLoaded(true));
       return;
     }
     if (connectionState !== "online") return;
@@ -924,7 +928,8 @@ export function PosPage({ user }: { user: SafeUser }) {
         setStatus(value);
         if (isTauriRuntime()) void refreshOfflineCache({ isOpen: value.isOpen, sessionId: value.sessionId });
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => setRegisterLoaded(true));
   }, [connectionState]);
   useEffect(() => {
     if (connectionState === "offline") {
@@ -957,33 +962,74 @@ export function PosPage({ user }: { user: SafeUser }) {
     if (connectionState !== "online") return;
     void syncPendingOfflineSales().finally(() => void getOfflineQueueSummary().then(setQueueSummary));
   }, [connectionState]);
-  const add = (product: ProductListRow) => {
+  const add = useCallback((product: ProductListRow) => {
     if (
       product.productType === "physical_product" &&
       product.trackStock &&
       product.currentStock <= 0
     )
-      return setError("Produit en rupture de stock.");
-    setCart((value) => addCartProduct(value, product));
-    setError("");
-  };
-  const scan = async (code: string) => {
+      {
+        setScannerState("Stock insuffisant");
+        return setError("Stock insuffisant pour ce produit.");
+      }
+    setCart((value) => {
+      const quantity = value.find((line) => line.product.id === product.id)?.quantity ?? 0;
+      if (product.productType === "physical_product" && product.trackStock && quantity >= product.currentStock) {
+        setError("Stock insuffisant pour ce produit.");
+        setScannerState("Stock insuffisant");
+        return value;
+      }
+      setScannerState(`${product.name} ajouté — Quantité : ${quantity + 1}`);
+      setError("");
+      return addCartProduct(value, product);
+    });
+  }, []);
+  const scan = useCallback(async (code: string) => {
+    setLastScannedCode(code);
+    setScannerState("Recherche…");
     try {
+      if (connectionState === "offline" && !status)
+        throw new Error("Le catalogue hors ligne n’est pas disponible. Actualisez le cache lorsque la connexion revient.");
+      if (!status?.isOpen)
+        throw new Error("La caisse doit être ouverte avant de commencer une vente.");
       const product =
         connectionState === "offline"
           ? await findCachedProductByCode(code)
           : (
               await request<ProductLookup>(
-                `/products/lookup?code=${encodeURIComponent(code)}&saleReady=true`,
+                `/products/lookup/${encodeURIComponent(code)}`,
               )
             ).product;
-      if (!product) throw new Error("Produit introuvable");
+      if (!product) throw new Error(`Produit introuvable · Code-barres : ${code}`);
+      if (!product.isActive) throw new Error("Ce produit est inactif.");
       add(product);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Produit introuvable");
+      const message = e instanceof Error ? e.message : "Produit introuvable";
+      setError(message);
+      setScannerState(
+        message.startsWith("Stock")
+          ? "Stock insuffisant"
+          : message.startsWith("Produit introuvable")
+            ? "Produit introuvable"
+            : "Erreur scanner",
+      );
     }
-  };
-  useScanner((code) => void scan(code));
+  }, [add, connectionState, status]);
+  useEffect(
+    () => registerLoaded ? globalScanQueue.register(({ barcode }) => scan(barcode)) : undefined,
+    [registerLoaded, scan],
+  );
+  useEffect(() => {
+    const shortcut = (event: KeyboardEvent) => {
+      if (event.key === "F2" || (event.ctrlKey && event.key.toLowerCase() === "k")) {
+        event.preventDefault();
+        document.querySelector<HTMLInputElement>("[data-pos-search]")?.focus();
+      }
+      if (event.key === "Escape") setCamera(false);
+    };
+    window.addEventListener("keydown", shortcut);
+    return () => window.removeEventListener("keydown", shortcut);
+  }, []);
   const checkout = async () => {
     if (checkoutLock.current || !cart.length) return;
     if (offline && mode !== "cash")
@@ -1053,6 +1099,13 @@ export function PosPage({ user }: { user: SafeUser }) {
         <Link to="/sales">Historique</Link>
       </div>
       <ErrorBox value={error} />
+      {error.startsWith("La caisse doit") && user.permissions.includes("register.open") && (
+        <Link className="button secondary" to="/register">Ouvrir la caisse</Link>
+      )}
+      {error.startsWith("Produit introuvable") && ["global_admin", "manager"].includes(user.role) && (
+        <Link className="button secondary" to={`/products/new?barcode=${encodeURIComponent(lastScannedCode)}`}>Créer ce produit</Link>
+      )}
+      <div className="scanner-status" role="status" aria-live="polite">{scannerState}</div>
       {offline && (
         <Notice
           value={`Mode hors ligne · ${queueSummary.pendingCount} vente(s) en attente de synchronisation`}
@@ -1065,7 +1118,7 @@ export function PosPage({ user }: { user: SafeUser }) {
       )}
       {camera && (
         <CameraScanner
-          onScan={(code) => void scan(code)}
+          onScan={(code) => enqueueGlobalScan(code, "camera")}
           close={() => setCamera(false)}
         />
       )}
@@ -1084,6 +1137,7 @@ export function PosPage({ user }: { user: SafeUser }) {
           <label>
             Recherche ou scan
             <input
+              data-pos-search
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Produit, SKU ou code"

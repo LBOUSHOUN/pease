@@ -13,12 +13,15 @@ import {
   Route,
   Routes,
   useLocation,
+  useNavigate,
 } from "react-router-dom";
 import type { RegisterStatus, SafeUser } from "@maktaba/shared-types";
 import { request, AuthResponse, ApiFailure } from "./api";
 import { initializeAuth, resetAuthInitialization } from "./auth-bootstrap";
 import { singleFlight } from "./single-flight";
 import { checkConnection, isTauriRuntime, refreshOfflineCache } from "./offline-pos";
+import { useScanner } from "./use-scanner";
+import { enqueueGlobalScan, hasBlockingScannerContext } from "./global-scanner";
 const Dashboard = lazy(() => import("./Dashboard"));
 const phase2 = () => import("./Phase2");
 const CategoriesPage = lazy(() =>
@@ -494,7 +497,24 @@ function Layout({
   offline: boolean;
 }) {
   const [menu, setMenu] = useState(false),
-    loc = useLocation();
+    [scannerEnabled, setScannerEnabled] = useState(true),
+    [scannerWarning, setScannerWarning] = useState(""),
+    loc = useLocation(),
+    navigate = useNavigate(),
+    scannerAvailable = isTauriRuntime() && user.permissions.includes("pos.use");
+  useScanner(
+    (barcode) => {
+      if (!scannerAvailable || !scannerEnabled) return;
+      if (hasBlockingScannerContext()) {
+        setScannerWarning("Fermez le formulaire ou la boÃ®te de dialogue avant de scanner.");
+        return;
+      }
+      setScannerWarning("");
+      enqueueGlobalScan(barcode);
+      if (loc.pathname !== "/pos") navigate("/pos");
+    },
+    { maxIntervalMs: 80, minLength: 3, duplicateWindowMs: 0 },
+  );
   useEffect(() => setMenu(false), [loc]);
   useEffect(() => {
     if (!menu) return;
@@ -504,6 +524,17 @@ function Layout({
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [menu]);
+  useEffect(() => {
+    if (!scannerAvailable) return;
+    const toggleScanner = (event: KeyboardEvent) => {
+      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        setScannerEnabled((value) => !value);
+      }
+    };
+    window.addEventListener("keydown", toggleScanner);
+    return () => window.removeEventListener("keydown", toggleScanner);
+  }, [scannerAvailable]);
   return (
     <div className="app">
       <aside id="app-sidebar" className={menu ? "open" : ""} aria-label="Navigation principale">
@@ -583,8 +614,14 @@ function Layout({
         <header>
           <button className="menu-toggle" aria-label="Ouvrir la navigation" aria-controls="app-sidebar" aria-expanded={menu} onClick={() => setMenu(!menu)}>☰</button>
           <span className="topbar-title">Maktaba POS</span>
+          {scannerAvailable && (
+            <button type="button" className="scanner-toggle secondary" aria-pressed={scannerEnabled} onClick={() => setScannerEnabled((value) => !value)}>
+              {scannerEnabled ? "Scanner global activé" : "Scanner global désactivé"}
+            </button>
+          )}
           <span className="connection-status">Connexion sécurisée</span>
         </header>
+        {scannerWarning && <div className="scanner-warning" role="alert">{scannerWarning}</div>}
         <div className="page-scroll">
         {offline && !["/pos", "/offline-queue"].includes(loc.pathname) ? (
           <main className="page">

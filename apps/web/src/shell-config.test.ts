@@ -40,6 +40,13 @@ describe("shared application shell", () => {
     expect(css).toContain("overflow-x: hidden");
   });
 
+  it("keeps a desktop scan while navigating globally to the POS", () => {
+    const app = read("apps/web/src/App.tsx");
+    expect(app).toContain("enqueueGlobalScan(barcode)");
+    expect(app).toContain('navigate("/pos")');
+    expect(app).toContain("Scanner global activé");
+  });
+
   it("keeps dashboard metric labels and values in separate elements", () => {
     const dashboard = read("apps/web/src/Dashboard.tsx");
     expect(dashboard).toContain('className="metric-label"');

@@ -473,6 +473,9 @@ button, .button { min-height: 42px; display: inline-flex; align-items: center; j
 .menu-toggle { display: none; width: 42px; padding: 0; background: #e8efec; color: #173d32; }
 .topbar-title { font-weight: 800; }
 .connection-status { margin-left: auto; color: var(--color-muted); font-size: .875rem; }
+.scanner-toggle { min-height: 34px; padding: .35rem .65rem; font-size: .8rem; white-space: nowrap; }
+.scanner-warning { flex: 0 0 auto; padding: .55rem 1rem; background: #fff3cd; color: #6b4e00; border-bottom: 1px solid #ead58b; }
+.scanner-status { display: inline-flex; align-items: center; min-height: 34px; margin: .35rem 0 .75rem; padding: .35rem .7rem; border: 1px solid #b9ddd1; border-radius: 999px; background: #edf8f4; color: #075f46; font-size: .85rem; font-weight: 700; }
 .page { width: 100%; max-width: 1600px; margin: 0 auto; padding: 1.35rem clamp(1rem, 2vw, 1.75rem) 2rem; }
 .page h1 { margin: 0; font-size: clamp(1.45rem, 2vw, 1.85rem); line-height: 1.2; }
 .page h2 { margin: 0; font-size: 1.1rem; }

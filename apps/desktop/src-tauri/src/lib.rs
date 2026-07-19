@@ -809,7 +809,7 @@ fn list_cached_products(
 #[tauri::command]
 fn lookup_cached_product(code: String, db: State<Database>) -> Result<Option<Value>, String> {
     let c = db.connect()?;
-    let raw: Option<String> = c.query_row("SELECT payload_json FROM offline_products WHERE is_active=1 AND (barcode=?1 OR internal_barcode=?1 OR sku=?1) LIMIT 1", [code.trim()], |r| r.get(0)).optional().map_err(db_err)?;
+    let raw: Option<String> = c.query_row("SELECT payload_json FROM offline_products WHERE barcode=?1 OR internal_barcode=?1 OR sku=?1 LIMIT 1", [code.trim()], |r| r.get(0)).optional().map_err(db_err)?;
     raw.map(|s| serde_json::from_str(&s).map_err(|_| "Cache produit corrompu".to_string()))
         .transpose()
 }

@@ -46,6 +46,7 @@ const optionalCode = z
   .optional()
   .nullable()
   .transform((v) => v || null);
+export const barcodeValueSchema = z.string().trim().min(2).max(100);
 const queryBoolean = z.preprocess(
   (v) => (v === "true" ? true : v === "false" ? false : v),
   z.boolean(),

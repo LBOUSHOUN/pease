@@ -21,6 +21,8 @@ import { request } from "./api";
 import { centsToMad, madToCents } from "./money";
 import { calculateStockAfter } from "./stock-utils";
 import { useScanner } from "./use-scanner";
+import { enqueueGlobalScan } from "./global-scanner";
+import { applyBarcodePrefill, readBarcodePrefill } from "./product-create-flow";
 const has = (u: SafeUser, p: string) => u.permissions.includes(p);
 function useDebounced(value: string, ms = 300) {
   const [result, setResult] = useState(value);
@@ -531,10 +533,16 @@ const initial: ProductFormState = {
 export function ProductForm({ edit = false }: { edit?: boolean }) {
   const { id } = useParams(),
     nav = useNavigate(),
-    [form, setForm] = useState(initial),
+    [searchParams, setSearchParams] = useSearchParams(),
+    prefill = readBarcodePrefill(searchParams, edit),
+    [form, setForm] = useState(() => ({
+      ...initial,
+      manufacturerBarcode: applyBarcodePrefill(initial.manufacturerBarcode, prefill.barcode, false),
+    })),
     [categories, setCategories] = useState<Category[]>([]),
     [busy, setBusy] = useState(false),
-    [error, setError] = useState("");
+    [error, setError] = useState(prefill.error),
+    [created, setCreated] = useState<ProductDetail>();
   useEffect(() => {
     request<CategoryListResponse>(
       "/categories?pageSize=100&status=active",
@@ -591,8 +599,14 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
       setBusy(true);
       if (edit) {
         await request(`/products/${id}`, { method: "PATCH", json: body });
-      } else await request("/products", { method: "POST", json: body });
-      nav("/products");
+        nav("/products");
+      } else {
+        const product = await request<ProductDetail>("/products", { method: "POST", json: body });
+        if (prefill.barcode && product.manufacturerBarcode) {
+          setCreated(product);
+          setSearchParams({}, { replace: true });
+        } else nav("/products");
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erreur");
     } finally {
@@ -603,7 +617,16 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
     <main className="page narrow">
       <h1>{edit ? "Modifier" : "Nouveau produit ou service"}</h1>
       <ErrorBox value={error} />
-      <form onSubmit={submit} className="grid-form">
+      {created && (
+        <section className="notice" role="status">
+          <p><b>{created.name}</b> a été créé avec le code-barres {created.manufacturerBarcode}.</p>
+          <button type="button" onClick={() => {
+            enqueueGlobalScan(created.manufacturerBarcode!, "usb");
+            nav("/pos", { replace: true });
+          }}>Retour au point de vente et ajouter</button>
+        </section>
+      )}
+      {!created && <form onSubmit={submit} className="grid-form">
         <label>
           Catégorie
           <select
@@ -745,7 +768,7 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
             Annuler
           </button>
         </div>
-      </form>
+      </form>}
     </main>
   );
 }
