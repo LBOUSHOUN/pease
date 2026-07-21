@@ -128,6 +128,7 @@ export const products = pgTable(
     name: text().notNull(),
     description: text(),
     productType: text("product_type").notNull(),
+    inventoryMode: text("inventory_mode").notNull().default("quantity"),
     sku: text().unique(),
     manufacturerBarcode: text("manufacturer_barcode").unique(),
     internalBarcode: text("internal_barcode").notNull().unique(),
@@ -177,6 +178,8 @@ export const products = pgTable(
       "product_type_ck",
       sql`${t.productType} in ('physical_product','service')`,
     ),
+    check("product_inventory_mode_ck", sql`${t.inventoryMode} in ('quantity','serialized')`),
+    check("service_inventory_mode_ck", sql`${t.productType}<>'service' or ${t.inventoryMode}='quantity'`),
     check(
       "service_stock_ck",
       sql`${t.productType}<>'service' or (${t.trackStock}=false and ${t.currentStock}=0)`,
@@ -733,5 +736,74 @@ export const supplierPayments = pgTable(
       "supplier_ledger_balance_ck",
       sql`${t.balanceBeforeCents}>=0 and ${t.balanceAfterCents}>=0`,
     ),
+  ],
+);
+
+export const serializedReceivingSessions = pgTable(
+  "serialized_receiving_sessions",
+  {
+    id: serial().primaryKey(),
+    productId: integer("product_id").notNull().references(() => products.id),
+    supplierId: integer("supplier_id").references(() => suppliers.id),
+    purchaseId: integer("purchase_id").references(() => purchases.id),
+    expectedQuantity: integer("expected_quantity").notNull(),
+    status: text().notNull().default("draft"),
+    createdBy: integer("created_by").notNull().references(() => users.id),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    createdAt: ts("created_at"),
+    updatedAt: ts("updated_at"),
+  },
+  (t) => [
+    index("serialized_receiving_product_status_idx").on(t.productId, t.status),
+    index("serialized_receiving_creator_date_idx").on(t.createdBy, t.createdAt),
+    check("serialized_receiving_quantity_ck", sql`${t.expectedQuantity}>0 and ${t.expectedQuantity}<=1000`),
+    check("serialized_receiving_status_ck", sql`${t.status} in ('draft','completed','cancelled')`),
+  ],
+);
+
+export const productUnits = pgTable(
+  "product_units",
+  {
+    id: serial().primaryKey(),
+    productId: integer("product_id").notNull().references(() => products.id),
+    barcode: text().notNull(),
+    status: text().notNull().default("available"),
+    receivingSessionId: integer("receiving_session_id").references(() => serializedReceivingSessions.id),
+    purchaseId: integer("purchase_id").references(() => purchases.id),
+    purchaseItemId: integer("purchase_item_id").references(() => purchaseItems.id),
+    saleId: integer("sale_id").references(() => sales.id),
+    saleItemId: integer("sale_item_id").references(() => saleItems.id),
+    returnId: integer("return_id").references(() => returns.id),
+    returnItemId: integer("return_item_id").references(() => returnItems.id),
+    returnCondition: text("return_condition"),
+    receivedAt: ts("received_at"),
+    soldAt: timestamp("sold_at", { withTimezone: true }),
+    returnedAt: timestamp("returned_at", { withTimezone: true }),
+    createdAt: ts("created_at"),
+    updatedAt: ts("updated_at"),
+  },
+  (t) => [
+    uniqueIndex("product_units_barcode_normalized_uq").on(sql`lower(trim(${t.barcode}))`),
+    index("product_units_barcode_idx").on(t.barcode),
+    index("product_units_product_status_idx").on(t.productId, t.status),
+    index("product_units_sale_idx").on(t.saleId, t.saleItemId),
+    check("product_units_barcode_ck", sql`length(trim(${t.barcode})) between 2 and 100`),
+    check("product_units_status_ck", sql`${t.status} in ('available','sold','damaged','lost','inactive')`),
+  ],
+);
+
+export const serializedReceivingScans = pgTable(
+  "serialized_receiving_scans",
+  {
+    id: serial().primaryKey(),
+    sessionId: integer("session_id").notNull().references(() => serializedReceivingSessions.id, { onDelete: "cascade" }),
+    barcode: text().notNull(),
+    createdAt: ts("created_at"),
+  },
+  (t) => [
+    uniqueIndex("serialized_receiving_scan_session_barcode_uq").on(t.sessionId, sql`lower(trim(${t.barcode}))`),
+    index("serialized_receiving_scan_session_idx").on(t.sessionId, t.createdAt),
+    check("serialized_receiving_scan_barcode_ck", sql`length(trim(${t.barcode})) between 2 and 100`),
   ],
 );

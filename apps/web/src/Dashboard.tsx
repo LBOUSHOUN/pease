@@ -39,7 +39,12 @@ export default function Dashboard({ user }: { user: SafeUser }) {
     <main className="page dashboard-page">
       <div className="page-header">
         <div><h1>Tableau de bord</h1><p>Vue d’ensemble de l’activité du magasin aujourd’hui.</p></div>
-        {user.permissions.includes("pos.use") && <Link className="button" to="/pos">Nouvelle vente</Link>}
+        <div className="inline-actions">
+          {user.permissions.includes("pos.use") && <Link className="button" to="/pos">Nouvelle vente</Link>}
+          {user.permissions.includes("stock.adjust") && <Link className="button secondary" to="/stock/receive">Réception de stock</Link>}
+          {user.permissions.includes("products.create") && <Link className="button secondary" to="/products/new">Ajouter un produit</Link>}
+          {user.permissions.includes("register.view") && <Link className="button secondary" to="/register">Ouvrir ou fermer la caisse</Link>}
+        </div>
       </div>
       <section className="metrics" aria-label="Indicateurs principaux">
         {cards.map(([label, value]) => (

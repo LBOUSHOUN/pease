@@ -7,6 +7,7 @@ import type {
   ProductListResponse,
   ProductListRow,
   ProductLookup,
+  ProductUnitLookup,
   RegisterMovementListResponse,
   RegisterSession,
   RegisterSessionListResponse,
@@ -16,12 +17,13 @@ import type {
   SaleListResponse,
   SaleResult,
 } from "@maktaba/shared-types";
-import { request } from "./api";
+import { ApiFailure, request } from "./api";
 import { centsToMad, madToCents } from "./money";
 import CameraScanner from "./CameraScanner";
 import { enqueueGlobalScan, globalScanQueue } from "./global-scanner";
 import {
   addCartProduct,
+  addSerializedCartUnit,
   CartLine,
   DENOMINATIONS,
   denominationTotal,
@@ -32,6 +34,7 @@ import {
 import {
   checkConnection,
   findCachedProductByCode,
+  findCachedSerializedUnit,
   getCachedProducts,
   getOfflineCacheStatus,
   getOfflineQueueSummary,
@@ -41,6 +44,8 @@ import {
   syncPendingOfflineSales,
   readQueueAsync,
   isTauriRuntime,
+  reserveCachedSerializedUnit,
+  releaseCachedSerializedUnits,
 } from "./offline-pos";
 import type { OfflineCacheStatus, OfflineQueueSummary, OfflineSaleRecord } from "./offline-pos";
 
@@ -891,7 +896,8 @@ export function PosPage({ user }: { user: SafeUser }) {
     search = useDebounced(query),
     cq = useDebounced(customerQuery),
     total = estimatedCartTotal(cart),
-    checkoutLock = useRef(false);
+    checkoutLock = useRef(false),
+    offlineReservationId = useRef(`cart-${crypto.randomUUID()}`);
   const offline = connectionState === "offline";
   let cashCents = 0;
   try {
@@ -913,6 +919,9 @@ export function PosPage({ user }: { user: SafeUser }) {
     window.addEventListener("online", update);
     window.addEventListener("offline", update);
     return () => { active = false; window.clearInterval(timer); window.removeEventListener("online", update); window.removeEventListener("offline", update); };
+  }, []);
+  useEffect(() => () => {
+    if (isTauriRuntime()) void releaseCachedSerializedUnits(offlineReservationId.current);
   }, []);
   useEffect(() => {
     setRegisterLoaded(false);
@@ -963,6 +972,11 @@ export function PosPage({ user }: { user: SafeUser }) {
     void syncPendingOfflineSales().finally(() => void getOfflineQueueSummary().then(setQueueSummary));
   }, [connectionState]);
   const add = useCallback((product: ProductListRow) => {
+    if (product.inventoryMode === "serialized") {
+      setScannerState("Code unitaire requis");
+      setError("Scannez le code-barres individuel d’une unité disponible.");
+      return;
+    }
     if (
       product.productType === "physical_product" &&
       product.trackStock &&
@@ -992,17 +1006,58 @@ export function PosPage({ user }: { user: SafeUser }) {
         throw new Error("Le catalogue hors ligne n’est pas disponible. Actualisez le cache lorsque la connexion revient.");
       if (!status?.isOpen)
         throw new Error("La caisse doit être ouverte avant de commencer une vente.");
-      const product =
-        connectionState === "offline"
+      let serialized: ProductUnitLookup | undefined;
+      let cachedSerialized: Awaited<ReturnType<typeof findCachedSerializedUnit>>;
+      if (connectionState === "online") {
+        try {
+          serialized = await request<ProductUnitLookup>(
+            `/product-units/lookup/${encodeURIComponent(code)}`,
+          );
+        } catch (e) {
+          if (!(e instanceof ApiFailure) || e.status !== 404) throw e;
+        }
+      } else {
+        cachedSerialized = await findCachedSerializedUnit(code);
+        if (cachedSerialized) {
+          if (!cachedSerialized.productActive || cachedSerialized.status !== "available")
+            throw new Error("Cette unité a déjà été vendue ou n’est plus disponible.");
+          if (cachedSerialized.reservationId)
+            throw new Error("Cette unité est déjà réservée localement.");
+          await reserveCachedSerializedUnit(code, offlineReservationId.current);
+        }
+      }
+      const cachedProduct: ProductListRow | undefined = cachedSerialized
+        ? {
+            id: cachedSerialized.productId, categoryId: null, categoryName: null,
+            name: cachedSerialized.productName, productType: "physical_product",
+            inventoryMode: "serialized", sku: null, internalBarcode: "",
+            sellingPriceCents: cachedSerialized.sellingPriceCents, currentStock: 1,
+            minimumStock: 0, unit: "unité", shelfLocation: null, isActive: true,
+            trackStock: true, isLowStock: false, isOutOfStock: false,
+          }
+        : undefined;
+      const product = serialized?.product ?? cachedProduct ??
+        (connectionState === "offline"
           ? await findCachedProductByCode(code)
-          : (
-              await request<ProductLookup>(
-                `/products/lookup/${encodeURIComponent(code)}`,
-              )
-            ).product;
+          : (await request<ProductLookup>(`/products/lookup/${encodeURIComponent(code)}`)).product);
       if (!product) throw new Error(`Produit introuvable · Code-barres : ${code}`);
       if (!product.isActive) throw new Error("Ce produit est inactif.");
-      add(product);
+      if (serialized || cachedSerialized) {
+        const unitBarcode = serialized?.unit.barcode ?? cachedSerialized!.barcode;
+        if (serialized && serialized.unit.status !== "available")
+          throw new Error("Cette unité n’est pas disponible.");
+        setCart((value) => {
+          if (value.some((line) => line.unitBarcodes?.includes(unitBarcode))) {
+            setError("Cette unité est déjà dans le panier.");
+            return value;
+          }
+          setScannerState(`${product.name} ajouté — unité ${unitBarcode}`);
+          setError("");
+          return addSerializedCartUnit(value, { ...product, inventoryMode: "serialized" }, unitBarcode);
+        });
+      } else if (product.inventoryMode === "serialized") {
+        throw new Error("Scannez le code-barres individuel d’une unité disponible.");
+      } else add(product);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Produit introuvable";
       setError(message);
@@ -1047,6 +1102,7 @@ export function PosPage({ user }: { user: SafeUser }) {
         items: cart.map((x) => ({
           productId: x.product.id,
           quantity: x.quantity,
+          unitBarcodes: x.unitBarcodes,
         })),
         paymentMode: mode,
         cashPaidCents: mode === "partial" ? cashCents : 0,
@@ -1055,23 +1111,38 @@ export function PosPage({ user }: { user: SafeUser }) {
       if (offline) {
         if (!isTauriRuntime()) throw new Error("Les ventes hors ligne sont réservées à l’application de bureau.");
         if (!status?.sessionId) throw new Error("Une caisse ouverte observée en ligne est requise.");
+        const offlineItems = await Promise.all(cart.map(async (line) => {
+          const units = await Promise.all((line.unitBarcodes ?? []).map(async (barcode) => {
+            const unit = await findCachedSerializedUnit(barcode);
+            if (!unit || unit.reservationId !== offlineReservationId.current)
+              throw new Error("Une unité sérialisée n’est plus réservée pour ce panier.");
+            return { id: unit.id, barcode: unit.barcode };
+          }));
+          return {
+            productId: line.product.id, quantity: line.quantity,
+            cachedUnitPriceCents: line.product.sellingPriceCents,
+            unitBarcodes: units.length ? units.map((unit) => unit.barcode) : undefined,
+            serializedUnits: units.length ? units : undefined,
+          };
+        }));
         const id = await queueOfflineSale({
           schemaVersion: 1,
           customerId: null,
-          items: cart.map((x) => ({ productId: x.product.id, quantity: x.quantity, cachedUnitPriceCents: x.product.sellingPriceCents })),
+          items: offlineItems,
           paymentMode: "cash",
           cashPaidCents: 0,
           idempotencyKey,
           clientTimestamp: new Date().toISOString(),
           registerIdSnapshot: status.sessionId,
           userSnapshot: { id: user.id, fullName: user.fullName, role: user.role },
-        });
+        }, offlineReservationId.current);
         setSale({
           id,
           saleNumber: `HORS-LIGNE #${id.slice(0, 8).toUpperCase()}`,
           totalCents: total,
         });
         setCart([]);
+        offlineReservationId.current = `cart-${crypto.randomUUID()}`;
         setCash("");
         setQueueSummary(await getOfflineQueueSummary());
         setError("");
@@ -1170,6 +1241,7 @@ export function PosPage({ user }: { user: SafeUser }) {
                     line.product.trackStock ? line.product.currentStock : 100000
                   }
                   value={line.quantity}
+                  disabled={line.product.inventoryMode === "serialized"}
                   onChange={(e) =>
                     setCart(
                       cart.map((x) =>
@@ -1183,15 +1255,21 @@ export function PosPage({ user }: { user: SafeUser }) {
                     )
                   }
                 />
+                {line.unitBarcodes?.length ? (
+                  <small className="serialized-cart-units">{line.unitBarcodes.join(" · ")}</small>
+                ) : null}
                 <b>
                   {centsToMad(line.product.sellingPriceCents * line.quantity)}
                 </b>
                 <button
                   className="secondary"
                   onClick={() =>
-                    setCart(
-                      cart.filter((x) => x.product.id !== line.product.id),
-                    )
+                    void (async () => {
+                      if (offline)
+                        for (const barcode of line.unitBarcodes ?? [])
+                          await releaseCachedSerializedUnits(offlineReservationId.current, barcode);
+                      setCart(cart.filter((x) => x.product.id !== line.product.id));
+                    })()
                   }
                 >
                   ×
@@ -1202,7 +1280,12 @@ export function PosPage({ user }: { user: SafeUser }) {
           {cart.length > 0 && (
             <button
               className="secondary"
-              onClick={() => confirm("Vider le panier ?") && setCart([])}
+              onClick={() => {
+                if (!confirm("Vider le panier ?")) return;
+                if (offline) void releaseCachedSerializedUnits(offlineReservationId.current);
+                setCart([]);
+                offlineReservationId.current = `cart-${crypto.randomUUID()}`;
+              }}
             >
               Vider
             </button>
@@ -1465,6 +1548,7 @@ export function OfflineQueuePage() {
       </div>
       <ErrorBox value={error} />
       <p>Dernière actualisation : {cache?.lastRefreshAt ? new Date(cache.lastRefreshAt).toLocaleString("fr-FR") : "Jamais"} · {cache?.productCount ?? 0} produit(s) en cache.</p>
+      <p>Unités sérialisées : {cache?.serializedUnitCount ?? 0} · disponibles : {cache?.availableSerializedUnitCount ?? 0} · réservées/en attente : {cache?.pendingSerializedUnitCount ?? 0}.</p>
       <button className="secondary" onClick={handleCacheRefresh} disabled={refreshing}>
         {refreshing ? "Actualisation…" : "Actualiser les données hors ligne"}
       </button>
@@ -1539,7 +1623,14 @@ export function OfflineQueuePage() {
                           : "En attente"}
                   </span>
                 </td>
-                <td>{record.payload.items.length}</td>
+                <td>
+                  {record.payload.items.reduce((sum, item) => sum + item.quantity, 0)}
+                  {record.payload.items.some((item) => item.serializedUnits?.length) && (
+                    <small className="queue-unit-barcodes">
+                      {record.payload.items.flatMap((item) => item.serializedUnits ?? []).map((unit) => unit.barcode).join(" · ")}
+                    </small>
+                  )}
+                </td>
                 <td>
                   {centsToMad(
                     record.payload.items.reduce(

@@ -314,6 +314,8 @@ export async function registerPhase4(app: FastifyInstance) {
             products.some((v) => v.product_type !== "physical_product")
           )
             throw new Error("PRODUCT");
+          if (products.some((v) => v.inventory_mode === "serialized"))
+            throw new Error("SERIALIZED_PRODUCT");
           let total = 0;
           for (const product of products) {
             const i = map.get(Number(product.id))!;
@@ -385,6 +387,12 @@ export async function registerPhase4(app: FastifyInstance) {
           return bad(
             reply,
             "Seuls les produits physiques peuvent être achetés.",
+            409,
+          );
+        if (m === "SERIALIZED_PRODUCT")
+          return bad(
+            reply,
+            "Utilisez la réception par unité pour les produits sérialisés.",
             409,
           );
         if (m === "REGISTER")
@@ -582,6 +590,9 @@ export async function registerPhase4(app: FastifyInstance) {
       const items = await sql<
         Row[]
       >`select id,product_id,product_name_snapshot,product_type_snapshot,quantity,returned_quantity,unit_price_cents,line_total_cents from sale_items where sale_id=${p.data.id} order by id`;
+      const serializedUnits = await sql<Row[]>`
+        select sale_item_id,barcode,status from product_units
+        where sale_id=${p.data.id} order by id`;
       const [prior] = await sql<
         Row[]
       >`select coalesce(sum(customer_debt_reduction_cents),0)::bigint debt,coalesce(sum(cash_refund_cents),0)::bigint cash from returns where original_sale_id=${p.data.id}`;
@@ -609,6 +620,13 @@ export async function registerPhase4(app: FastifyInstance) {
           returnableValueCents:
             (Number(i.quantity) - Number(i.returned_quantity)) *
             Number(i.unit_price_cents),
+          unitBarcodes: serializedUnits
+            .filter(
+              (unit) =>
+                Number(unit.sale_item_id) === Number(i.id) &&
+                unit.status === "sold",
+            )
+            .map((unit) => unit.barcode),
         })),
       };
     },
@@ -650,6 +668,7 @@ export async function registerPhase4(app: FastifyInstance) {
             input: (typeof x.items)[number];
             row: Row;
             amount: number;
+            units: Row[];
           }[];
           for (const input of x.items) {
             const row = sold.find((v) => Number(v.id) === input.saleItemId)!;
@@ -658,9 +677,33 @@ export async function registerPhase4(app: FastifyInstance) {
               Number(row.quantity) - Number(row.returned_quantity)
             )
               throw new Error("QUANTITY");
+            const [productMode] = await tx<Row[]>`
+              select inventory_mode from products where id=${row.product_id}`;
+            let units: Row[] = [];
+            if (productMode?.inventory_mode === "serialized") {
+              const codes = (input.unitBarcodes ?? []).map((barcode) =>
+                barcode.trim().toLowerCase(),
+              );
+              if (
+                codes.length !== input.quantity ||
+                new Set(codes).size !== codes.length
+              )
+                throw new Error("RETURN_UNIT_REQUIRED");
+              units = await tx<Row[]>`
+                select * from product_units
+                where sale_id=${sale.id} and sale_item_id=${row.id}
+                  and lower(trim(barcode)) in ${sql(codes)}
+                for update`;
+              if (units.length !== codes.length)
+                throw new Error("RETURN_UNIT_WRONG_SALE");
+              if (units.some((unit) => unit.status !== "sold"))
+                throw new Error("RETURN_UNIT_ALREADY_RETURNED");
+            } else if ((input.unitBarcodes?.length ?? 0) > 0) {
+              throw new Error("RETURN_UNIT_QUANTITY_PRODUCT");
+            }
             const amount = input.quantity * Number(row.unit_price_cents);
             total += amount;
-            prepared.push({ input, row, amount });
+            prepared.push({ input, row, amount, units });
           }
           const [priorTotals] = await tx<
               Row[]
@@ -714,10 +757,43 @@ export async function registerPhase4(app: FastifyInstance) {
               : [];
           for (const v of prepared) {
             await tx`update sale_items set returned_quantity=returned_quantity+${v.input.quantity} where id=${v.row.id}`;
-            await tx`insert into return_items(return_id,sale_item_id,product_id,quantity,amount_cents,condition,restock) values(${r!.id},${v.row.id},${v.row.product_id},${v.input.quantity},${v.amount},${v.input.condition ?? null},${v.row.product_type_snapshot === "physical_product" && v.input.restock})`;
+            const [returnItem] = await tx<Row[]>`
+              insert into return_items(return_id,sale_item_id,product_id,quantity,amount_cents,condition,restock)
+              values(${r!.id},${v.row.id},${v.row.product_id},${v.input.quantity},${v.amount},${v.input.condition ?? null},${v.row.product_type_snapshot === "physical_product" && v.input.restock})
+              returning id`;
+            if (v.units.length) {
+              const unitIds = v.units.map((unit) => Number(unit.id));
+              const nextStatus = v.input.restock ? "available" : "damaged";
+              const changed = await tx<Row[]>`
+                update product_units
+                set status=${nextStatus},return_id=${r!.id},return_item_id=${returnItem!.id},
+                    return_condition=${v.input.condition ?? (v.input.restock ? "restocked" : "damaged")},
+                    returned_at=now(),updated_at=now()
+                where id in ${sql(unitIds)} and status='sold'
+                returning id`;
+              if (changed.length !== v.units.length)
+                throw new Error("RETURN_UNIT_ALREADY_RETURNED");
+              if (v.input.restock) {
+                const product = products.find(
+                  (item) => Number(item.id) === Number(v.row.product_id),
+                )!;
+                const before = Number(product.current_stock);
+                const [reconciled] = await tx<Row[]>`
+                  select current_stock from products where id=${product.id}`;
+                const after = Number(reconciled!.current_stock);
+                product.current_stock = after;
+                await tx`insert into stock_movements(product_id,movement_type,quantity_change,stock_before,stock_after,reference_type,reference_id,reason,created_by)
+                  values(${product.id},'customer_return',${v.input.quantity},${before},${after},'return',${r!.id},${x.reason},${req.user!.id})`;
+              }
+              await tx`insert into audit_logs(user_id,action,entity_type,entity_id,new_values_json)
+                values(${req.user!.id},${v.input.restock ? "serialized_unit.restocked" : "serialized_unit.damaged"},'product_unit',${unitIds[0] ?? null},${JSON.stringify({ unitIds, returnId: Number(r!.id) })})`;
+              await tx`insert into audit_logs(user_id,action,entity_type,entity_id,new_values_json)
+                values(${req.user!.id},'serialized_unit.returned','product_unit',${unitIds[0] ?? null},${JSON.stringify({ unitIds, returnId: Number(r!.id), result: nextStatus })})`;
+            }
             if (
               v.row.product_type_snapshot === "physical_product" &&
-              v.input.restock
+              v.input.restock &&
+              v.units.length === 0
             ) {
               const product = products.find(
                   (z) => Number(z.id) === Number(v.row.product_id),
@@ -761,6 +837,14 @@ export async function registerPhase4(app: FastifyInstance) {
         if (m === "SALE") return bad(reply, "Vente non retournable.", 409);
         if (m === "ITEM" || m === "QUANTITY")
           return bad(reply, "La quantité dépasse le solde retournable.", 409);
+        if (m === "RETURN_UNIT_REQUIRED")
+          return bad(reply, "Scannez le code exact de chaque unité retournée.", 409);
+        if (m === "RETURN_UNIT_WRONG_SALE")
+          return bad(reply, "Cette unité ne fait pas partie de cette vente.", 409);
+        if (m === "RETURN_UNIT_ALREADY_RETURNED")
+          return bad(reply, "Cette unité a déjà été retournée.", 409);
+        if (m === "RETURN_UNIT_QUANTITY_PRODUCT")
+          return bad(reply, "Ce produit n’utilise pas le suivi par unité.", 409);
         if (m === "DEBT")
           return bad(
             reply,

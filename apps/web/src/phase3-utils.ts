@@ -8,7 +8,7 @@ export const denominationTotal = (counts: Record<number, number>) =>
     (sum, value) => sum + value * Math.max(0, Math.floor(counts[value] ?? 0)),
     0,
   );
-export type CartLine = { product: ProductListRow; quantity: number };
+export type CartLine = { product: ProductListRow; quantity: number; unitBarcodes?: string[] };
 export const addCartProduct = (cart: CartLine[], product: ProductListRow) => {
   const found = cart.find((line) => line.product.id === product.id);
   return found
@@ -18,6 +18,15 @@ export const addCartProduct = (cart: CartLine[], product: ProductListRow) => {
           : line,
       )
     : [...cart, { product, quantity: 1 }];
+};
+export const addSerializedCartUnit = (cart: CartLine[], product: ProductListRow, barcode: string) => {
+  if (cart.some((line) => line.unitBarcodes?.includes(barcode))) return cart;
+  const found = cart.find((line) => line.product.id === product.id);
+  return found
+    ? cart.map((line) => line.product.id === product.id
+      ? { ...line, quantity: line.quantity + 1, unitBarcodes: [...(line.unitBarcodes ?? []), barcode] }
+      : line)
+    : [...cart, { product, quantity: 1, unitBarcodes: [barcode] }];
 };
 export const estimatedCartTotal = (cart: CartLine[]) =>
   cart.reduce(

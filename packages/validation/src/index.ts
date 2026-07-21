@@ -72,6 +72,7 @@ const productBase = z.object({
   name: z.string().trim().min(1).max(200),
   description: optionalText,
   productType: z.enum(["physical_product", "service"]),
+  inventoryMode: z.enum(["quantity", "serialized"]).default("quantity"),
   sku: optionalCode,
   manufacturerBarcode: optionalCode,
   purchasePriceCents: z.number().int().min(0),
@@ -83,14 +84,35 @@ const productBase = z.object({
   shelfLocation: optionalCode,
   trackStock: z.boolean().default(true),
 });
-export const productCreateSchema = productBase.transform((v) =>
-  v.productType === "service"
-    ? { ...v, trackStock: false, minimumStock: 0 }
-    : v,
-);
+export const productCreateSchema = productBase
+  .extend({ initialQuantity: z.number().int().min(0).max(100000).default(0) })
+  .superRefine((value, ctx) => {
+    if (value.inventoryMode === "serialized" && value.initialQuantity > 0)
+      ctx.addIssue({ code: "custom", path: ["initialQuantity"], message: "Utilisez la réception par unité pour le stock sérialisé" });
+  })
+  .transform((v) =>
+    v.productType === "service"
+      ? { ...v, inventoryMode: "quantity" as const, trackStock: false, minimumStock: 0, initialQuantity: 0 }
+      : v,
+  );
 export const productUpdateSchema = productBase
   .partial()
   .refine((v) => Object.keys(v).length > 0);
+
+export const serializedReceivingCreateSchema = z.object({
+  productId: z.number().int().positive(),
+  supplierId: z.number().int().positive().optional().nullable(),
+  expectedQuantity: z.number().int().positive().max(1000),
+});
+export const serializedReceivingQuantitySchema = z.object({
+  expectedQuantity: z.number().int().positive().max(1000),
+});
+export const serializedReceivingScanSchema = z.object({
+  barcode: barcodeValueSchema,
+});
+export const serializedReceivingBatchSchema = z.object({
+  barcodes: z.array(barcodeValueSchema).min(1).max(1000),
+});
 export const productFiltersSchema = paginationSchema.extend({
   search: z.string().trim().max(200).default(""),
   categoryId: z.coerce.number().int().positive().optional(),
@@ -135,6 +157,11 @@ export const stockAdjustmentSchema = z
         path: ["direction"],
       });
   });
+export const quickStockReceiptSchema = z.object({
+  productId: z.number().int().positive(),
+  quantity: z.number().int().positive().max(100000),
+  idempotencyKey: z.string().trim().min(8).max(100).regex(/^[A-Za-z0-9._:-]+$/),
+});
 export const stockFiltersSchema = paginationSchema.extend({
   search: z.string().trim().max(200).default(""),
   categoryId: z.coerce.number().int().positive().optional(),
@@ -251,6 +278,8 @@ export const debtPaymentSchema = z.object({
 export const saleCartLineSchema = z.object({
   productId: z.number().int().positive(),
   quantity: z.number().int().positive().max(100000),
+  unitBarcodes: z.array(barcodeValueSchema).max(1000).optional(),
+  serializedUnits: z.array(z.object({ id: z.number().int().positive(), barcode: barcodeValueSchema })).max(1000).optional(),
 });
 export const saleCreateSchema = z.object({
   customerId: z.number().int().positive().optional().nullable(),
@@ -354,6 +383,7 @@ export const returnItemSchema = z.object({
   quantity: z.number().int().positive(),
   restock: z.boolean(),
   condition: z.string().trim().max(200).optional().nullable(),
+  unitBarcodes: z.array(barcodeValueSchema).max(1000).optional(),
 });
 export const returnCreateSchema = z.object({
   saleId: z.number().int().positive(),

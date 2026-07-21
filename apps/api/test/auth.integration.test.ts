@@ -27,6 +27,150 @@ beforeAll(async () => {
   ({ buildApp: asyncBuild } = await import("../src/app.js"));
   app = await asyncBuild();
 });
+
+describe("serialized unit receiving", () => {
+  async function setup(expectedQuantity: number) {
+    const sessionCookie = await phase2Owner();
+    const cat = (await category(sessionCookie, `Sérialisé ${expectedQuantity}`)).json();
+    const product = (
+      await app.inject({
+        method: "POST",
+        url: "/api/products",
+        headers: { cookie: sessionCookie },
+        payload: productBody(cat.id, {
+          name: `Calculatrice ${expectedQuantity}`,
+          sku: `SER-${expectedQuantity}`,
+          manufacturerBarcode: `CARTON-${expectedQuantity}`,
+          inventoryMode: "serialized",
+        }),
+      })
+    ).json();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/serialized-receiving",
+      headers: { cookie: sessionCookie },
+      payload: { productId: product.id, expectedQuantity },
+    });
+    expect(response.statusCode, response.body).toBe(201);
+    return { sessionCookie, product, session: response.json() };
+  }
+
+  it.each([1, 5, 7, 24, 50])("stores a dynamic expected quantity of %i", async (quantity) => {
+    const { session } = await setup(quantity);
+    expect(session.expectedQuantity).toBe(quantity);
+    expect(session.remainingQuantity).toBe(quantity);
+  });
+
+  it("rejects duplicates, incomplete confirmation, a lower quantity and an extra scan", async () => {
+    const { sessionCookie, session } = await setup(1);
+    const scan = () => app.inject({ method: "POST", url: `/api/serialized-receiving/${session.id}/scans`, headers: { cookie: sessionCookie }, payload: { barcode: "611000001" } });
+    expect((await scan()).statusCode).toBe(201);
+    expect((await scan()).statusCode).toBe(409);
+    const lowered = await app.inject({ method: "PATCH", url: `/api/serialized-receiving/${session.id}/expected-quantity`, headers: { cookie: sessionCookie }, payload: { expectedQuantity: 0 } });
+    expect(lowered.statusCode).toBe(400);
+    expect((await app.inject({ method: "POST", url: `/api/serialized-receiving/${session.id}/scans`, headers: { cookie: sessionCookie }, payload: { barcode: "611000002" } })).statusCode).toBe(409);
+  });
+
+  it("confirms atomically and derives stock from exactly five available units", async () => {
+    const { sessionCookie, product, session } = await setup(5);
+    const early = await app.inject({ method: "POST", url: `/api/serialized-receiving/${session.id}/confirm`, headers: { cookie: sessionCookie } });
+    expect(early.statusCode).toBe(409);
+    for (let index = 1; index <= 5; index++) {
+      const scanned = await app.inject({ method: "POST", url: `/api/serialized-receiving/${session.id}/scans`, headers: { cookie: sessionCookie }, payload: { barcode: `61110000${index}` } });
+      expect(scanned.statusCode, scanned.body).toBe(201);
+    }
+    const confirmed = await app.inject({ method: "POST", url: `/api/serialized-receiving/${session.id}/confirm`, headers: { cookie: sessionCookie } });
+    expect(confirmed.statusCode, confirmed.body).toBe(201);
+    const [counts] = await database.sql`select count(*)::int units,count(*) filter(where status='available')::int available from product_units where product_id=${product.id}`;
+    const [stored] = await database.sql`select current_stock from products where id=${product.id}`;
+    expect(counts).toMatchObject({ units: 5, available: 5 });
+    expect(Number(stored!.current_stock)).toBe(5);
+    const lookup = await app.inject({ url: "/api/product-units/lookup/611100001", headers: { cookie: sessionCookie } });
+    expect(lookup.statusCode, lookup.body).toBe(200);
+    expect(lookup.json().product.id).toBe(product.id);
+  });
+
+  it("sells the exact serialized unit once and preserves sale idempotency", async () => {
+    const { sessionCookie, product, session } = await setup(2);
+    for (const barcode of ["622200001", "622200002"])
+      expect((await app.inject({ method: "POST", url: `/api/serialized-receiving/${session.id}/scans`, headers: { cookie: sessionCookie }, payload: { barcode } })).statusCode).toBe(201);
+    expect((await app.inject({ method: "POST", url: `/api/serialized-receiving/${session.id}/confirm`, headers: { cookie: sessionCookie } })).statusCode).toBe(201);
+    expect((await openRegister(sessionCookie)).statusCode).toBe(201);
+    const idempotencyKey = crypto.randomUUID();
+    const sell = () => app.inject({
+      method: "POST", url: "/api/sales", headers: { cookie: sessionCookie, "idempotency-key": idempotencyKey },
+      payload: { items: [{ productId: product.id, quantity: 1, unitBarcodes: ["622200001"] }], paymentMode: "cash", cashPaidCents: 0, idempotencyKey },
+    });
+    const first = await sell(), duplicate = await sell();
+    expect(first.statusCode, first.body).toBe(201);
+    expect(duplicate.statusCode, duplicate.body).toBe(200);
+    expect(duplicate.json().id).toBe(first.json().id);
+    const [unit] = await database.sql`select status,sale_id,sale_item_id from product_units where barcode='622200001'`;
+    const [stock] = await database.sql`select current_stock from products where id=${product.id}`;
+    expect(unit).toMatchObject({ status: "sold", sale_id: first.json().id });
+    expect(unit!.sale_item_id).toBeTruthy();
+    expect(Number(stock!.current_stock)).toBe(1);
+    const secondSale = await app.inject({ method: "POST", url: "/api/sales", headers: { cookie: sessionCookie }, payload: { items: [{ productId: product.id, quantity: 1, unitBarcodes: ["622200001"] }], paymentMode: "cash", cashPaidCents: 0, idempotencyKey: crypto.randomUUID() } });
+    expect(secondSale.statusCode).toBe(409);
+  });
+
+  it("returns exact serialized units to available or damaged and rejects reuse", async () => {
+    const { sessionCookie, product, session } = await setup(2);
+    for (const barcode of ["633300001", "633300002"])
+      await app.inject({ method: "POST", url: `/api/serialized-receiving/${session.id}/scans`, headers: { cookie: sessionCookie }, payload: { barcode } });
+    await app.inject({ method: "POST", url: `/api/serialized-receiving/${session.id}/confirm`, headers: { cookie: sessionCookie } });
+    await openRegister(sessionCookie);
+    const sellUnit = (barcode: string) => app.inject({
+      method: "POST", url: "/api/sales", headers: { cookie: sessionCookie },
+      payload: { items: [{ productId: product.id, quantity: 1, unitBarcodes: [barcode] }], paymentMode: "cash", cashPaidCents: 0, idempotencyKey: crypto.randomUUID() },
+    });
+    const saleOne = await sellUnit("633300001"), saleTwo = await sellUnit("633300002");
+    const unitRows = await database.sql`select barcode,sale_item_id from product_units where product_id=${product.id} order by barcode`;
+    const returnUnit = (saleId: number, saleItemId: number, barcode: string, restock: boolean) => app.inject({
+      method: "POST", url: "/api/returns", headers: { cookie: sessionCookie },
+      payload: { saleId, items: [{ saleItemId, quantity: 1, restock, condition: restock ? "Bon état" : "Endommagée", unitBarcodes: [barcode] }], reason: "Retour unité sérialisée", idempotencyKey: crypto.randomUUID() },
+    });
+    const restocked = await returnUnit(saleOne.json().id, Number(unitRows[0]!.sale_item_id), "633300001", true);
+    expect(restocked.statusCode, restocked.body).toBe(201);
+    const duplicateReturn = await returnUnit(saleOne.json().id, Number(unitRows[0]!.sale_item_id), "633300001", true);
+    expect(duplicateReturn.statusCode).toBe(409);
+    const damaged = await returnUnit(saleTwo.json().id, Number(unitRows[1]!.sale_item_id), "633300002", false);
+    expect(damaged.statusCode, damaged.body).toBe(201);
+    const states = await database.sql`select barcode,status,return_id,returned_at,return_condition from product_units where product_id=${product.id} order by barcode`;
+    expect(states[0]).toMatchObject({ barcode: "633300001", status: "available" });
+    expect(states[0]!.return_id).toBeTruthy();
+    expect(states[0]!.returned_at).toBeTruthy();
+    expect(states[1]).toMatchObject({ barcode: "633300002", status: "damaged" });
+    const resellDamaged = await sellUnit("633300002");
+    expect(resellDamaged.statusCode).toBe(409);
+  });
+
+  it("validates a complete imported batch before inserting any scan", async () => {
+    const { sessionCookie, session } = await setup(5);
+    const send = (barcodes: string[]) => app.inject({ method: "POST", url: `/api/serialized-receiving/${session.id}/scans/batch`, headers: { cookie: sessionCookie }, payload: { barcodes } });
+    expect((await send(["644400001", "x"])).statusCode).toBe(400);
+    expect((await send(["644400001", "644400001"])).statusCode).toBe(409);
+    let state = (await app.inject({ url: `/api/serialized-receiving/${session.id}`, headers: { cookie: sessionCookie } })).json();
+    expect(state.scannedQuantity).toBe(0);
+    const accepted = await send(["644400001", "644400002", "644400003"]);
+    expect(accepted.statusCode, accepted.body).toBe(201);
+    state = accepted.json();
+    expect(state).toMatchObject({ scannedQuantity: 3, remainingQuantity: 2 });
+  });
+
+  it("protects the spreadsheet-safe serialized unit export", async () => {
+    const { sessionCookie } = await setup(1);
+    const exported = await app.inject({ url: "/api/serialized-units/export.csv", headers: { cookie: sessionCookie } });
+    expect(exported.statusCode, exported.body).toBe(200);
+    expect(exported.headers["content-type"]).toContain("text/csv");
+    expect(exported.rawPayload[0]).toBe(0xef);
+    expect((await app.inject({ url: "/api/serialized-units/export.csv" })).statusCode).toBe(401);
+    const argon2 = (await import("argon2")).default;
+    await database.sql`insert into users(full_name,username,password_hash,role,must_change_password) values('Caissier','serialcashier',${await argon2.hash("Secret123")},'cashier',false)`;
+    const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { login: "serialcashier", password: "Secret123" } });
+    expect((await app.inject({ url: "/api/serialized-units/export.csv", headers: { cookie: cookie(login) } })).statusCode).toBe(403);
+  });
+});
 let asyncBuild: () => Promise<FastifyInstance>;
 beforeEach(async () => {
   await database.sql.unsafe(
@@ -509,6 +653,42 @@ describe("online catalog and stock", () => {
     const audits =
       await database.sql`select count(*)::int as count from audit_logs where action='stock.adjusted'`;
     expect(audits[0]!.count).toBe(5);
+  });
+  it("creates initial stock atomically and receives arbitrary quantities idempotently", async () => {
+    const session = await phase2Owner(),
+      cat = (await category(session)).json(),
+      created = await app.inject({
+        method: "POST",
+        url: "/api/products",
+        headers: { cookie: session },
+        payload: productBody(cat.id, { initialQuantity: 7 }),
+      });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().currentStock).toBe(7);
+    const productId = created.json().id;
+    for (const [index, quantity] of [1, 5, 24, 50].entries()) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/stock/receipts",
+        headers: { cookie: session },
+        payload: { productId, quantity, idempotencyKey: `receipt-${productId}-${index}` },
+      });
+      expect(response.statusCode).toBe(201);
+    }
+    const duplicate = await app.inject({
+      method: "POST",
+      url: "/api/stock/receipts",
+      headers: { cookie: session },
+      payload: { productId, quantity: 99, idempotencyKey: `receipt-${productId}-0` },
+    });
+    expect(duplicate.statusCode).toBe(200);
+    expect(duplicate.json()).toMatchObject({ duplicate: true, quantityAdded: 1, newStock: 8 });
+    const [stored] = await database.sql`select current_stock from products where id=${productId}`;
+    expect(stored!.current_stock).toBe(87);
+    const [movementCount] = await database.sql`select count(*)::int count from stock_movements where product_id=${productId}`;
+    expect(movementCount!.count).toBe(5);
+    const [auditCount] = await database.sql`select count(*)::int count from audit_logs where entity_id=${productId} and action in ('stock.initialized','stock.received')`;
+    expect(auditCount!.count).toBe(5);
   });
   it("serializes concurrent stock changes and rejects service adjustments", async () => {
     const session = await phase2Owner(),

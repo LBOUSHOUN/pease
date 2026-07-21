@@ -203,6 +203,41 @@ FROM offline_outbox_v3;
             tx.commit()
                 .map_err(|_| "Migration impossible".to_string())?;
         }
+        let v5: Option<i64> = c
+            .query_row(
+                "SELECT version FROM schema_migrations WHERE version=5",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|_| "Migration impossible".to_string())?;
+        if v5.is_none() {
+            let tx = c
+                .unchecked_transaction()
+                .map_err(|_| "Migration impossible".to_string())?;
+            tx.execute_batch(
+                r#"
+CREATE TABLE offline_serialized_units(
+  server_id INTEGER PRIMARY KEY,
+  barcode TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  product_id INTEGER NOT NULL,
+  product_name TEXT NOT NULL,
+  sale_price_cents INTEGER NOT NULL CHECK(sale_price_cents>=0),
+  product_active INTEGER NOT NULL CHECK(product_active IN (0,1)),
+  server_status TEXT NOT NULL CHECK(server_status IN ('available','sold','damaged','lost','inactive')),
+  reservation_id TEXT,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_offline_serialized_product ON offline_serialized_units(product_id);
+CREATE INDEX idx_offline_serialized_status ON offline_serialized_units(server_status,reservation_id);
+INSERT INTO schema_migrations(version,name) VALUES(5,'serialized_unit_cache');
+"#,
+            )
+            .map_err(|_| "Migration hors ligne v5 impossible".to_string())?;
+            tx.commit()
+                .map_err(|_| "Migration impossible".to_string())?;
+        }
         Ok(())
     }
     pub fn validate_file(path: &Path) -> Result<(), String> {
@@ -273,6 +308,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+        let serialized: i64 = c
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='offline_serialized_units'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(serialized, 1);
         drop(c);
         std::fs::remove_file(p).ok();
     }
@@ -321,6 +364,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(id, 9);
+        drop(c);
+        std::fs::remove_file(p).ok();
+    }
+
+    #[test]
+    fn serialized_cache_reservation_survives_reopen_and_is_unique() {
+        let (db, p) = temporary();
+        {
+            let c = db.connect().unwrap();
+            c.execute("INSERT INTO offline_serialized_units(server_id,barcode,product_id,product_name,sale_price_cents,product_active,server_status,payload_json,updated_at) VALUES(1,'SER-1',9,'Calculatrice',1200,1,'available','{}','2026-01-01')", []).unwrap();
+            assert_eq!(c.execute("UPDATE offline_serialized_units SET reservation_id='cart-1' WHERE barcode='SER-1' AND reservation_id IS NULL AND server_status='available'", []).unwrap(), 1);
+            assert_eq!(c.execute("UPDATE offline_serialized_units SET reservation_id='cart-2' WHERE barcode='SER-1' AND reservation_id IS NULL AND server_status='available'", []).unwrap(), 0);
+        }
+        let reopened = Database::temporary(p.clone()).unwrap();
+        let c = reopened.connect().unwrap();
+        let reservation: String = c
+            .query_row(
+                "SELECT reservation_id FROM offline_serialized_units WHERE barcode='SER-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reservation, "cart-1");
         drop(c);
         std::fs::remove_file(p).ok();
     }

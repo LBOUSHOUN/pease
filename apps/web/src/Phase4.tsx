@@ -960,6 +960,8 @@ export function ReturnForm() {
     [items, setItems] = useState<ReturnableItem[]>([]),
     [remainingCredit, setRemainingCredit] = useState(0),
     [quantities, setQuantities] = useState<Record<number, number>>({}),
+    [selectedUnits, setSelectedUnits] = useState<Record<number, string[]>>({}),
+    [unitInputs, setUnitInputs] = useState<Record<number, string>>({}),
     [restock, setRestock] = useState<Record<number, boolean>>({}),
     [register, setRegister] = useState<RegisterStatus>(),
     [error, setError] = useState(""),
@@ -983,6 +985,23 @@ export function ReturnForm() {
     request<RegisterStatus>("/register/status").then(setRegister);
     if (routeId || params.get("saleId")) load(); /* initial route only */ // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  const addReturnUnit = (item: ReturnableItem) => {
+    const barcode = (unitInputs[item.id] ?? "").trim();
+    if (!item.unitBarcodes?.includes(barcode)) {
+      setError("Cette unité ne fait pas partie de cette vente.");
+      return;
+    }
+    const current = selectedUnits[item.id] ?? [];
+    if (current.includes(barcode)) {
+      setError("Cette unité a déjà été ajoutée au retour.");
+      return;
+    }
+    const next = [...current, barcode];
+    setSelectedUnits({ ...selectedUnits, [item.id]: next });
+    setQuantities({ ...quantities, [item.id]: next.length });
+    setUnitInputs({ ...unitInputs, [item.id]: "" });
+    setError("");
+  };
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (busy.current) return;
@@ -997,6 +1016,9 @@ export function ReturnForm() {
             .map((i) => ({
               saleItemId: i.id,
               quantity: quantities[i.id],
+              unitBarcodes: i.unitBarcodes?.length
+                ? selectedUnits[i.id] ?? []
+                : undefined,
               restock:
                 i.productType === "physical_product" && Boolean(restock[i.id]),
               condition: restock[i.id] ? "restocké" : "non restocké",
@@ -1035,10 +1057,51 @@ export function ReturnForm() {
               min="0"
               max={i.returnableQuantity}
               value={quantities[i.id] ?? 0}
+              disabled={Boolean(i.unitBarcodes?.length)}
               onChange={(e) =>
                 setQuantities({ ...quantities, [i.id]: Number(e.target.value) })
               }
             />
+            {i.unitBarcodes?.length ? (
+              <div className="serialized-return-units">
+                <div
+                  className="scanner"
+                >
+                  <label>
+                    Code unitaire vendu
+                    <input
+                      value={unitInputs[i.id] ?? ""}
+                      onChange={(event) =>
+                        setUnitInputs({ ...unitInputs, [i.id]: event.target.value })
+                      }
+                      placeholder="Scanner le code exact"
+                      autoComplete="off"
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          addReturnUnit(i);
+                        }
+                      }}
+                    />
+                  </label>
+                  <button type="button" onClick={() => addReturnUnit(i)}>Ajouter</button>
+                </div>
+                {(selectedUnits[i.id] ?? []).map((barcode) => (
+                  <span className="badge" key={barcode}>
+                    {barcode}{" "}
+                    <button
+                      type="button"
+                      className="link"
+                      onClick={() => {
+                        const next = (selectedUnits[i.id] ?? []).filter((x) => x !== barcode);
+                        setSelectedUnits({ ...selectedUnits, [i.id]: next });
+                        setQuantities({ ...quantities, [i.id]: next.length });
+                      }}
+                    >×</button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
             {i.productType === "physical_product" ? (
               <label>
                 <input

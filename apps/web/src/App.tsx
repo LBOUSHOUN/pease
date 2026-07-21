@@ -9,13 +9,14 @@ import {
 } from "react";
 import {
   BrowserRouter,
+  Navigate,
   NavLink,
   Route,
   Routes,
   useLocation,
   useNavigate,
 } from "react-router-dom";
-import type { RegisterStatus, SafeUser } from "@maktaba/shared-types";
+import type { ProductLookup, ProductUnitLookup, RegisterStatus, SafeUser } from "@maktaba/shared-types";
 import { request, AuthResponse, ApiFailure } from "./api";
 import { initializeAuth, resetAuthInitialization } from "./auth-bootstrap";
 import { singleFlight } from "./single-flight";
@@ -39,7 +40,9 @@ const ProductForm = lazy(() =>
 const ProductDetails = lazy(() =>
   phase2().then((m) => ({ default: m.ProductDetails })),
 );
+const SerializedReceiving = lazy(() => import("./SerializedReceiving"));
 const StockPage = lazy(() => phase2().then((m) => ({ default: m.StockPage })));
+const StockReceiving = lazy(() => import("./StockReceiving"));
 const StockAdjust = lazy(() =>
   phase2().then((m) => ({ default: m.StockAdjust })),
 );
@@ -499,19 +502,47 @@ function Layout({
   const [menu, setMenu] = useState(false),
     [scannerEnabled, setScannerEnabled] = useState(true),
     [scannerWarning, setScannerWarning] = useState(""),
+    [unknownBarcode, setUnknownBarcode] = useState(""),
     loc = useLocation(),
     navigate = useNavigate(),
-    scannerAvailable = isTauriRuntime() && user.permissions.includes("pos.use");
+    scannerAvailable = user.permissions.includes("pos.use");
   useScanner(
-    (barcode) => {
+    async (barcode) => {
       if (!scannerAvailable || !scannerEnabled) return;
+      const active = document.activeElement;
+      if (loc.pathname === "/stock/receive" || active instanceof HTMLElement && active.closest("[data-scanner-input]")) return;
       if (hasBlockingScannerContext()) {
-        setScannerWarning("Fermez le formulaire ou la boÃ®te de dialogue avant de scanner.");
+        setScannerWarning("Fermez le formulaire ou la boîte de dialogue avant de scanner.");
         return;
       }
       setScannerWarning("");
-      enqueueGlobalScan(barcode);
-      if (loc.pathname !== "/pos") navigate("/pos");
+      if (offline) {
+        enqueueGlobalScan(barcode);
+        if (loc.pathname !== "/pos") navigate("/pos");
+        return;
+      }
+      try {
+        let product;
+        try {
+          product = (await request<ProductLookup>(`/products/lookup/${encodeURIComponent(barcode)}`)).product;
+        } catch (lookupError) {
+          if (!(lookupError instanceof ApiFailure) || lookupError.status !== 404) throw lookupError;
+          product = (await request<ProductUnitLookup>(`/product-units/lookup/${encodeURIComponent(barcode)}`)).product;
+        }
+        if (!product.isActive) {
+          setScannerWarning("Ce produit est inactif.");
+          return;
+        }
+        setUnknownBarcode("");
+        enqueueGlobalScan(barcode);
+        if (loc.pathname !== "/pos") navigate("/pos");
+      } catch (reason) {
+        if (reason instanceof ApiFailure && reason.status === 404) {
+          setUnknownBarcode(barcode);
+          return;
+        }
+        setScannerWarning(reason instanceof Error ? reason.message : "La recherche du produit a échoué.");
+      }
     },
     { maxIntervalMs: 80, minLength: 3, duplicateWindowMs: 0 },
   );
@@ -551,6 +582,9 @@ function Layout({
           )}
           {user.permissions.includes("stock.view") && (
             <NavLink to="/stock">Stock</NavLink>
+          )}
+          {user.permissions.includes("stock.adjust") && (
+            <NavLink to="/stock/receive">Réception de stock</NavLink>
           )}
           {user.permissions.includes("register.view") && (
             <NavLink to="/register">Caisse</NavLink>
@@ -622,6 +656,20 @@ function Layout({
           <span className="connection-status">Connexion sécurisée</span>
         </header>
         {scannerWarning && <div className="scanner-warning" role="alert">{scannerWarning}</div>}
+        {unknownBarcode && (
+          <div className="scanner-unknown" role="dialog" aria-modal="true" aria-labelledby="unknown-barcode-title">
+            <div className="section-card">
+              <h2 id="unknown-barcode-title">Produit inconnu</h2>
+              <p>Le code-barres <strong>{unknownBarcode}</strong> n’existe pas encore.</p>
+              <div className="form-actions">
+                <button type="button" className="secondary" onClick={() => setUnknownBarcode("")}>Fermer</button>
+                {user.permissions.includes("products.create") ? (
+                  <button type="button" onClick={() => { const code = unknownBarcode; setUnknownBarcode(""); navigate(`/products/new?barcode=${encodeURIComponent(code)}`); }}>Créer ce produit</button>
+                ) : <p>Vous ne disposez pas de la permission nécessaire pour créer un produit.</p>}
+              </div>
+            </div>
+          </div>
+        )}
         <div className="page-scroll">
         {offline && !["/pos", "/offline-queue"].includes(loc.pathname) ? (
           <main className="page">
@@ -695,6 +743,14 @@ function Layout({
             }
           />
           <Route
+            path="/serialized-receiving/new"
+            element={
+              user.permissions.includes("serialized_units.receive")
+                ? <Lazy><SerializedReceiving user={user} /></Lazy>
+                : <Navigate to="/forbidden" replace />
+            }
+          />
+          <Route
             path="/stock"
             element={
               <Lazy>
@@ -709,6 +765,10 @@ function Layout({
                 <StockAdjust />
               </Lazy>
             }
+          />
+          <Route
+            path="/stock/receive"
+            element={user.permissions.includes("stock.adjust") ? <Lazy><StockReceiving user={user} /></Lazy> : <Navigate to="/" replace />}
           />
           <Route
             path="/stock/movements"

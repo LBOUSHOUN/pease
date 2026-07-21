@@ -10,6 +10,8 @@ export type OfflineSalePayload = {
     productId: number;
     quantity: number;
     cachedUnitPriceCents: number;
+    unitBarcodes?: string[];
+    serializedUnits?: Array<{ id: number; barcode: string }>;
   }>;
   paymentMode: "cash";
   cashPaidCents: 0;
@@ -44,13 +46,28 @@ export type OfflineQueueSummary = {
 export type CacheRefreshInput = {
   categories: unknown[];
   products: ProductListRow[];
+  serializedUnits?: CachedSerializedUnit[];
   settings: unknown;
   register: { isOpen: boolean; sessionId?: number };
 };
 export type OfflineCacheStatus = {
   productCount: number;
+  serializedUnitCount: number;
+  availableSerializedUnitCount: number;
+  pendingSerializedUnitCount: number;
   lastRefreshAt?: string | null;
   register?: { isOpen: boolean; sessionId?: number } | null;
+};
+export type CachedSerializedUnit = {
+  id: number;
+  barcode: string;
+  productId: number;
+  productName: string;
+  sellingPriceCents: number;
+  productActive: boolean;
+  status: "available" | "sold" | "damaged" | "lost" | "inactive";
+  reservationId?: string | null;
+  updatedAt: string;
 };
 
 let syncInFlight: Promise<void> | null = null;
@@ -78,6 +95,7 @@ export async function replaceOfflineCache(input: CacheRefreshInput) {
   return invoke<{ productCount: number; lastRefreshAt: string }>("replace_offline_cache", {
     categoriesJson: JSON.stringify(input.categories),
     productsJson: JSON.stringify(input.products),
+    serializedUnitsJson: JSON.stringify(input.serializedUnits ?? []),
     settingsJson: JSON.stringify(input.settings),
     registerJson: JSON.stringify(input.register),
   });
@@ -90,6 +108,7 @@ export async function refreshOfflineCache(register: { isOpen: boolean; sessionId
     request<unknown>("/settings"),
   ]);
   const products: ProductListRow[] = [];
+  const serializedUnits: CachedSerializedUnit[] = [];
   let page = 1;
   while (true) {
     const result = await request<{ rows: ProductListRow[]; total: number }>(
@@ -99,9 +118,19 @@ export async function refreshOfflineCache(register: { isOpen: boolean; sessionId
     if (products.length >= result.total || result.rows.length === 0) break;
     page += 1;
   }
+  page = 1;
+  while (true) {
+    const result = await request<{ rows: CachedSerializedUnit[]; total: number }>(
+      `/product-units/cache?page=${page}&pageSize=500`,
+    );
+    serializedUnits.push(...result.rows);
+    if (serializedUnits.length >= result.total || result.rows.length === 0) break;
+    page += 1;
+  }
   return replaceOfflineCache({
     categories: categoriesResult.rows,
     products,
+    serializedUnits,
     settings,
     register,
   });
@@ -122,7 +151,7 @@ export async function findCachedProductByCode(code: string): Promise<ProductList
   return (await invoke<ProductListRow | null>("lookup_cached_product", { code })) ?? undefined;
 }
 
-export async function queueOfflineSale(payload: OfflineSalePayload): Promise<string> {
+export async function queueOfflineSale(payload: OfflineSalePayload, reservationId?: string): Promise<string> {
   if (!isTauriRuntime()) {
     throw new Error("Les ventes hors ligne sont disponibles uniquement dans l’application de bureau.");
   }
@@ -132,7 +161,11 @@ export async function queueOfflineSale(payload: OfflineSalePayload): Promise<str
     !payload.registerIdSnapshot ||
     !payload.items.length ||
     payload.items.some(
-      (item) => item.productId <= 0 || item.quantity <= 0 || item.cachedUnitPriceCents < 0,
+      (item) =>
+        item.productId <= 0 || item.quantity <= 0 || item.cachedUnitPriceCents < 0 ||
+        (item.serializedUnits !== undefined &&
+          (item.serializedUnits.length !== item.quantity ||
+            item.unitBarcodes?.length !== item.quantity)),
     )
   ) {
     throw new Error("Cette vente ne peut pas être enregistrée hors ligne.");
@@ -140,8 +173,24 @@ export async function queueOfflineSale(payload: OfflineSalePayload): Promise<str
   const result = await invoke<{ id: string }>("queue_offline_sale", {
     payloadJson: JSON.stringify(payload),
     idempotencyKey: payload.idempotencyKey,
+    reservationId: reservationId ?? null,
   });
   return result.id;
+}
+
+export async function findCachedSerializedUnit(code: string): Promise<CachedSerializedUnit | undefined> {
+  if (!isTauriRuntime()) return undefined;
+  return (await invoke<CachedSerializedUnit | null>("lookup_cached_serialized_unit", { code })) ?? undefined;
+}
+
+export async function reserveCachedSerializedUnit(code: string, reservationId: string) {
+  if (!isTauriRuntime()) throw new Error("Le cache sérialisé est réservé à l’application de bureau.");
+  return invoke<CachedSerializedUnit>("reserve_cached_serialized_unit", { code, reservationId });
+}
+
+export async function releaseCachedSerializedUnits(reservationId: string, code?: string) {
+  if (!isTauriRuntime()) return;
+  await invoke("release_cached_serialized_unit", { reservationId, code: code ?? null });
 }
 
 export async function readQueueAsync(): Promise<OfflineSaleRecord[]> {

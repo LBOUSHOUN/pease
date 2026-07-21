@@ -614,9 +614,101 @@ fn close_register(
 }
 
 #[tauri::command]
+fn lookup_cached_serialized_unit(
+    code: String,
+    db: State<Database>,
+) -> Result<Option<Value>, String> {
+    let c = db.connect()?;
+    c.query_row(
+        "SELECT server_id,barcode,product_id,product_name,sale_price_cents,product_active,server_status,reservation_id,updated_at
+         FROM offline_serialized_units WHERE barcode=?1 COLLATE NOCASE LIMIT 1",
+        [code.trim()],
+        |r| Ok(json!({
+            "id": r.get::<_, i64>(0)?, "barcode": r.get::<_, String>(1)?,
+            "productId": r.get::<_, i64>(2)?, "productName": r.get::<_, String>(3)?,
+            "sellingPriceCents": r.get::<_, i64>(4)?, "productActive": r.get::<_, bool>(5)?,
+            "status": r.get::<_, String>(6)?, "reservationId": r.get::<_, Option<String>>(7)?,
+            "updatedAt": r.get::<_, String>(8)?
+        })),
+    )
+    .optional()
+    .map_err(db_err)
+}
+
+#[tauri::command]
+fn reserve_cached_serialized_unit(
+    code: String,
+    reservation_id: String,
+    db: State<Database>,
+) -> Result<Value, String> {
+    if reservation_id.trim().is_empty() {
+        return Err("Réservation locale invalide".into());
+    }
+    let _guard = db.guard()?;
+    let c = db.connect()?;
+    let changed = c
+        .execute(
+            "UPDATE offline_serialized_units SET reservation_id=?1
+         WHERE barcode=?2 COLLATE NOCASE AND product_active=1 AND server_status='available'
+           AND (reservation_id IS NULL OR reservation_id=?1)",
+            params![reservation_id, code.trim()],
+        )
+        .map_err(db_err)?;
+    if changed != 1 {
+        return Err("Cette unité est déjà réservée ou n’est plus disponible".into());
+    }
+    drop(_guard);
+    lookup_cached_serialized_unit(code, db).map(|unit| unit.unwrap_or(Value::Null))
+}
+
+#[tauri::command]
+fn release_cached_serialized_unit(
+    code: Option<String>,
+    reservation_id: String,
+    db: State<Database>,
+) -> Result<(), String> {
+    let c = db.connect()?;
+    if let Some(code) = code {
+        c.execute(
+            "UPDATE offline_serialized_units SET reservation_id=NULL WHERE barcode=?1 COLLATE NOCASE AND reservation_id=?2",
+            params![code.trim(), reservation_id],
+        ).map_err(db_err)?;
+    } else {
+        c.execute(
+            "UPDATE offline_serialized_units SET reservation_id=NULL WHERE reservation_id=?1",
+            [reservation_id],
+        )
+        .map_err(db_err)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn list_pending_serialized_units(db: State<Database>) -> Result<Vec<Value>, String> {
+    let c = db.connect()?;
+    let mut query = c.prepare(
+        "SELECT server_id,barcode,product_id,product_name,reservation_id FROM offline_serialized_units
+         WHERE reservation_id IS NOT NULL ORDER BY product_name,barcode",
+    ).map_err(db_err)?;
+    let rows = query
+        .query_map([], |r| {
+            Ok(json!({
+                "id": r.get::<_, i64>(0)?, "barcode": r.get::<_, String>(1)?,
+                "productId": r.get::<_, i64>(2)?, "productName": r.get::<_, String>(3)?,
+                "reservationId": r.get::<_, String>(4)?
+            }))
+        })
+        .map_err(db_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_err)?;
+    Ok(rows)
+}
+
+#[tauri::command]
 fn queue_offline_sale(
     payload_json: String,
     idempotency_key: String,
+    reservation_id: Option<String>,
     db: State<Database>,
 ) -> Result<Value, String> {
     let payload: Value = serde_json::from_str(&payload_json)
@@ -633,12 +725,35 @@ fn queue_offline_sale(
     }
     let id = format!("offline-{}", uuid::Uuid::new_v4());
     let now = chrono::Utc::now().to_rfc3339();
-    let c = db.connect()?;
-    c.execute(
+    let _guard = db.guard()?;
+    let mut c = db.connect()?;
+    let tx = c.transaction().map_err(db_err)?;
+    if let Some(reservation) = reservation_id {
+        let serialized = payload["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|item| item["serializedUnits"].as_array().into_iter().flatten());
+        for unit in serialized {
+            let barcode = unit["barcode"]
+                .as_str()
+                .ok_or_else(|| "Code unitaire hors ligne invalide".to_string())?;
+            let changed = tx.execute(
+                "UPDATE offline_serialized_units SET reservation_id=?1
+                 WHERE barcode=?2 COLLATE NOCASE AND reservation_id=?3 AND server_status='available'",
+                params![id, barcode, reservation],
+            ).map_err(db_err)?;
+            if changed != 1 {
+                return Err("Cette unité n’est plus réservée pour ce panier".into());
+            }
+        }
+    }
+    tx.execute(
         "INSERT INTO offline_outbox(id,operation_type,idempotency_key,payload_json,status,created_at,updated_at) VALUES(?1,'cash_sale',?2,?3,'pending',?4,?4)",
         params![id, idempotency_key, payload_json, now],
     )
     .map_err(db_err)?;
+    tx.commit().map_err(db_err)?;
     Ok(json!({"id": id, "status": "pending"}))
 }
 
@@ -683,11 +798,11 @@ fn transition_offline_sale(
     db: State<Database>,
 ) -> Result<(), String> {
     let c = db.connect()?;
-    let current: String = c
+    let (current, payload_json): (String, String) = c
         .query_row(
-            "SELECT status FROM offline_outbox WHERE id=?1",
+            "SELECT status,payload_json FROM offline_outbox WHERE id=?1",
             [&id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .map_err(|_| "Opération hors ligne introuvable".to_string())?;
     let valid = matches!(
@@ -708,6 +823,25 @@ fn transition_offline_sale(
     if changed != 1 {
         return Err("L’opération a été modifiée simultanément".into());
     }
+    if matches!(status.as_str(), "synced" | "rejected") {
+        let payload: Value = serde_json::from_str(&payload_json)
+            .map_err(|_| "Payload hors ligne corrompu".to_string())?;
+        for unit in payload["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|item| item["serializedUnits"].as_array().into_iter().flatten())
+        {
+            if let Some(barcode) = unit["barcode"].as_str() {
+                c.execute(
+                    "UPDATE offline_serialized_units SET server_status=?1,reservation_id=NULL,updated_at=?2
+                     WHERE barcode=?3 COLLATE NOCASE AND reservation_id=?4",
+                    params![if status == "synced" { "sold" } else { "inactive" }, now, barcode, id],
+                )
+                .map_err(db_err)?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -715,6 +849,7 @@ fn transition_offline_sale(
 fn replace_offline_cache(
     categories_json: String,
     products_json: String,
+    serialized_units_json: String,
     settings_json: String,
     register_json: String,
     db: State<Database>,
@@ -723,6 +858,8 @@ fn replace_offline_cache(
         .map_err(|_| "Catégories hors ligne invalides".to_string())?;
     let products: Vec<Value> = serde_json::from_str(&products_json)
         .map_err(|_| "Produits hors ligne invalides".to_string())?;
+    let serialized_units: Vec<Value> = serde_json::from_str(&serialized_units_json)
+        .map_err(|_| "Unités sérialisées hors ligne invalides".to_string())?;
     let settings: Value = serde_json::from_str(&settings_json)
         .map_err(|_| "Paramètres hors ligne invalides".to_string())?;
     let register: Value = serde_json::from_str(&register_json)
@@ -740,6 +877,11 @@ fn replace_offline_cache(
         .map_err(db_err)?;
     tx.execute("DELETE FROM offline_settings", [])
         .map_err(db_err)?;
+    tx.execute(
+        "DELETE FROM offline_serialized_units WHERE reservation_id IS NULL",
+        [],
+    )
+    .map_err(db_err)?;
     for category in categories {
         let id = category["id"]
             .as_i64()
@@ -769,6 +911,37 @@ fn replace_offline_cache(
             params![id,product["manufacturerBarcode"].as_str(),product["internalBarcode"].as_str(),product["sku"].as_str(),name,product_type,selling_price,stock,active,product.to_string(),now],
         ).map_err(db_err)?;
     }
+    for unit in &serialized_units {
+        let id = unit["id"].as_i64().unwrap_or(0);
+        let product_id = unit["productId"].as_i64().unwrap_or(0);
+        let barcode = unit["barcode"].as_str().unwrap_or("").trim();
+        let product_name = unit["productName"].as_str().unwrap_or("").trim();
+        let price = unit["sellingPriceCents"].as_i64().unwrap_or(-1);
+        let active = unit["productActive"].as_bool().unwrap_or(false);
+        let status = unit["status"].as_str().unwrap_or("");
+        if id <= 0
+            || product_id <= 0
+            || barcode.len() < 2
+            || product_name.is_empty()
+            || price < 0
+            || !matches!(
+                status,
+                "available" | "sold" | "damaged" | "lost" | "inactive"
+            )
+        {
+            return Err("Unité sérialisée hors ligne invalide".into());
+        }
+        tx.execute(
+            "INSERT INTO offline_serialized_units(server_id,barcode,product_id,product_name,sale_price_cents,product_active,server_status,reservation_id,payload_json,updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,NULL,?8,?9)
+             ON CONFLICT(server_id) DO UPDATE SET barcode=excluded.barcode,product_id=excluded.product_id,
+               product_name=excluded.product_name,sale_price_cents=excluded.sale_price_cents,
+               product_active=excluded.product_active,server_status=excluded.server_status,
+               payload_json=excluded.payload_json,updated_at=excluded.updated_at",
+            params![id, barcode, product_id, product_name, price, active, status, unit.to_string(), now],
+        )
+        .map_err(db_err)?;
+    }
     tx.execute(
         "INSERT INTO offline_settings(id,payload_json,updated_at) VALUES(1,?1,?2)",
         params![settings.to_string(), now],
@@ -777,7 +950,13 @@ fn replace_offline_cache(
     tx.execute("INSERT INTO offline_metadata(key,value_json,updated_at) VALUES('register_status',?1,?2) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at", params![register.to_string(), now]).map_err(db_err)?;
     tx.execute("INSERT INTO offline_metadata(key,value_json,updated_at) VALUES('last_refresh',?1,?2) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at", params![json!({"at":now}).to_string(), now]).map_err(db_err)?;
     tx.commit().map_err(db_err)?;
-    Ok(json!({"productCount": products_json_count(&products_json), "lastRefreshAt": now}))
+    let available = serialized_units
+        .iter()
+        .filter(|unit| unit["status"].as_str() == Some("available"))
+        .count();
+    Ok(
+        json!({"productCount": products_json_count(&products_json), "serializedUnitCount": serialized_units.len(), "availableSerializedUnitCount": available, "lastRefreshAt": now}),
+    )
 }
 
 fn products_json_count(value: &str) -> usize {
@@ -820,6 +999,13 @@ fn get_offline_cache_status(db: State<Database>) -> Result<Value, String> {
     let product_count: i64 = c
         .query_row("SELECT count(*) FROM offline_products", [], |r| r.get(0))
         .map_err(db_err)?;
+    let (serialized_unit_count, available_serialized_unit_count, pending_serialized_unit_count): (i64, i64, i64) = c
+        .query_row(
+            "SELECT count(*),sum(CASE WHEN server_status='available' AND reservation_id IS NULL THEN 1 ELSE 0 END),sum(CASE WHEN reservation_id IS NOT NULL THEN 1 ELSE 0 END) FROM offline_serialized_units",
+            [],
+            |r| Ok((r.get(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0), r.get::<_, Option<i64>>(2)?.unwrap_or(0))),
+        )
+        .map_err(db_err)?;
     let register: Option<String> = c
         .query_row(
             "SELECT value_json FROM offline_metadata WHERE key='register_status'",
@@ -838,6 +1024,9 @@ fn get_offline_cache_status(db: State<Database>) -> Result<Value, String> {
         .map_err(db_err)?;
     Ok(json!({
         "productCount": product_count,
+        "serializedUnitCount": serialized_unit_count,
+        "availableSerializedUnitCount": available_serialized_unit_count,
+        "pendingSerializedUnitCount": pending_serialized_unit_count,
         "lastRefreshAt": last_refresh_at,
         "register": register.and_then(|value| serde_json::from_str::<Value>(&value).ok())
     }))
@@ -1134,6 +1323,10 @@ pub fn run() {
             open_register,
             close_register,
             queue_offline_sale,
+            lookup_cached_serialized_unit,
+            reserve_cached_serialized_unit,
+            release_cached_serialized_unit,
+            list_pending_serialized_units,
             list_offline_queue,
             transition_offline_sale,
             replace_offline_cache,

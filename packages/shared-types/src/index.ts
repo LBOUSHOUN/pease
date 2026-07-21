@@ -62,6 +62,7 @@ export interface ProductListRow {
   categoryName: string | null;
   name: string;
   productType: ProductType;
+  inventoryMode?: "quantity" | "serialized";
   sku: string | null;
   manufacturerBarcode?: string | null;
   internalBarcode: string;
@@ -76,6 +77,29 @@ export interface ProductListRow {
   trackStock: boolean;
   isLowStock: boolean;
   isOutOfStock: boolean;
+}
+export interface SerializedReceivingScan {
+  id: number;
+  barcode: string;
+  createdAt: string;
+}
+export interface SerializedReceivingSession {
+  id: number;
+  productId: number;
+  productName: string;
+  supplierId: number | null;
+  purchaseId: number | null;
+  expectedQuantity: number;
+  scannedQuantity: number;
+  remainingQuantity: number;
+  status: "draft" | "completed" | "cancelled";
+  createdAt: string;
+  completedAt: string | null;
+  scans: SerializedReceivingScan[];
+}
+export interface ProductUnitLookup {
+  unit: { id: number; barcode: string; status: "available" | "sold" | "damaged" | "lost" | "inactive" };
+  product: ProductListRow & { inventoryMode: "serialized" };
 }
 export interface ProductDetail extends ProductListRow {
   description: string | null;
@@ -357,6 +381,7 @@ export interface ReturnableItem {
   returnableQuantity: number;
   unitPriceCents: number;
   returnableValueCents: number;
+  unitBarcodes?: string[];
 }
 export interface ReturnListRow {
   id: number;

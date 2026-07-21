@@ -19,6 +19,7 @@ import {
   productCreateSchema,
   productFiltersSchema,
   productUpdateSchema,
+  quickStockReceiptSchema,
   stockAdjustmentSchema,
   stockFiltersSchema,
   stockMovementFiltersSchema,
@@ -89,6 +90,7 @@ const pf = {
   name: products.name,
   description: products.description,
   productType: products.productType,
+  inventoryMode: products.inventoryMode,
   sku: products.sku,
   manufacturerBarcode: products.manufacturerBarcode,
   internalBarcode: products.internalBarcode,
@@ -395,22 +397,41 @@ export async function registerPhase2(app: FastifyInstance) {
               next: appSettings.nextBarcodeSequence,
             });
           if (!setting) throw new Error("settings missing");
+          const { initialQuantity, ...productInput } = p.data;
           const internal = `${setting.prefix}-${String(setting.next - 1).padStart(6, "0")}`,
             qr = `${setting.prefix}-P-${internal}`,
             [row] = await tx
               .insert(products)
               .values({
-                ...p.data,
+                ...productInput,
                 description: p.data.description || null,
                 sku: p.data.sku || null,
                 manufacturerBarcode: p.data.manufacturerBarcode || null,
                 shelfLocation: p.data.shelfLocation || null,
                 internalBarcode: internal,
                 qrIdentifier: qr,
-                currentStock: 0,
+                currentStock: initialQuantity,
                 createdBy: req.user!.id,
               })
               .returning();
+          if (initialQuantity > 0) {
+            const [movement] = await tx.insert(stockMovements).values({
+              productId: row!.id,
+              movementType: "opening_stock",
+              quantityChange: initialQuantity,
+              stockBefore: 0,
+              stockAfter: initialQuantity,
+              reason: "Stock initial lors de la création du produit",
+              createdBy: req.user!.id,
+            }).returning({ id: stockMovements.id });
+            await tx.insert(auditLogs).values({
+              userId: req.user!.id,
+              action: "stock.initialized",
+              entityType: "product",
+              entityId: row!.id,
+              newValuesJson: JSON.stringify({ stock: initialQuantity, movementId: movement!.id }),
+            });
+          }
           await tx.insert(auditLogs).values({
             userId: req.user!.id,
             action: "product.created",
@@ -419,6 +440,7 @@ export async function registerPhase2(app: FastifyInstance) {
             newValuesJson: JSON.stringify({
               name: row!.name,
               internalBarcode: internal,
+              initialQuantity,
             }),
           });
           return row!;
@@ -518,6 +540,8 @@ export async function registerPhase2(app: FastifyInstance) {
           }
           if (p.data.productType === "service" && old.currentStock !== 0)
             throw Object.assign(new Error(), { kind: "service_has_stock" });
+          if (p.data.inventoryMode !== undefined && p.data.inventoryMode !== old.inventoryMode)
+            throw Object.assign(new Error(), { kind: "inventory_mode_locked" });
           const willBeService =
               p.data.productType === "service" ||
               (p.data.productType === undefined &&
@@ -577,6 +601,12 @@ export async function registerPhase2(app: FastifyInstance) {
             reply,
             req.id,
             "Impossible de convertir un produit avec du stock en service.",
+          );
+        if ((e as { kind?: string }).kind === "inventory_mode_locked")
+          return clash(
+            reply,
+            req.id,
+            "Le mode de stock d’un produit existant ne peut pas être modifié.",
           );
         throw e;
       }
@@ -740,6 +770,8 @@ export async function registerPhase2(app: FastifyInstance) {
           if (!product) throw Object.assign(new Error(), { kind: "missing" });
           if (product.productType !== "physical_product" || !product.trackStock)
             throw Object.assign(new Error(), { kind: "tracking" });
+          if (product.inventoryMode === "serialized")
+            throw Object.assign(new Error(), { kind: "serialized" });
           const increase = [
               "manual_adjustment",
               "inventory_adjustment",
@@ -792,6 +824,8 @@ export async function registerPhase2(app: FastifyInstance) {
             req.id,
             "Le stock ne peut pas être ajusté pour ce produit ou service.",
           );
+        if (k === "serialized")
+          return clash(reply, req.id, "Utilisez la réception par unités pour ce produit sérialisé.");
         if (k === "negative")
           return clash(
             reply,
@@ -799,6 +833,64 @@ export async function registerPhase2(app: FastifyInstance) {
             "Stock insuffisant : le stock ne peut pas devenir négatif.",
           );
         throw e;
+      }
+    },
+  );
+  app.post(
+    "/api/stock/receipts",
+    { preHandler: requirePermission("stock.adjust") },
+    async (req, reply) => {
+      const parsed = quickStockReceiptSchema.safeParse(req.body);
+      if (!parsed.success)
+        return bad(reply, req.id, parsed.error.flatten().fieldErrors);
+      try {
+        const result = await db.transaction(async (tx) => {
+          const [existing] = await tx
+            .select({ id: stockMovements.id, stockAfter: stockMovements.stockAfter, quantityChange: stockMovements.quantityChange })
+            .from(stockMovements)
+            .where(eq(stockMovements.idempotencyKey, parsed.data.idempotencyKey))
+            .limit(1);
+          if (existing)
+            return { productId: parsed.data.productId, newStock: existing.stockAfter, quantityAdded: existing.quantityChange, duplicate: true };
+          await tx.execute(raw`select id from products where id=${parsed.data.productId} for update`);
+          const [product] = await tx.select().from(products).where(eq(products.id, parsed.data.productId)).limit(1);
+          if (!product) throw Object.assign(new Error(), { kind: "missing" });
+          if (!product.isActive) throw Object.assign(new Error(), { kind: "inactive" });
+          if (product.productType !== "physical_product" || !product.trackStock)
+            throw Object.assign(new Error(), { kind: "tracking" });
+          if (product.inventoryMode !== "quantity")
+            throw Object.assign(new Error(), { kind: "serialized" });
+          const after = product.currentStock + parsed.data.quantity;
+          const [movement] = await tx.insert(stockMovements).values({
+            productId: product.id,
+            movementType: "stock_in",
+            quantityChange: parsed.data.quantity,
+            stockBefore: product.currentStock,
+            stockAfter: after,
+            reason: "Réception rapide par scanner",
+            idempotencyKey: parsed.data.idempotencyKey,
+            createdBy: req.user!.id,
+          }).returning({ id: stockMovements.id });
+          await tx.update(products).set({ currentStock: after, updatedAt: new Date() }).where(eq(products.id, product.id));
+          await tx.insert(auditLogs).values({
+            userId: req.user!.id,
+            action: "stock.received",
+            entityType: "product",
+            entityId: product.id,
+            oldValuesJson: JSON.stringify({ stock: product.currentStock }),
+            newValuesJson: JSON.stringify({ stock: after, quantityAdded: parsed.data.quantity, movementId: movement!.id }),
+          });
+          return { productId: product.id, newStock: after, quantityAdded: parsed.data.quantity, duplicate: false };
+        });
+        return reply.code(result.duplicate ? 200 : 201).send(result);
+      } catch (error) {
+        const kind = (error as { kind?: string }).kind;
+        if (kind === "missing") return absent(reply, req.id, "Produit introuvable.");
+        if (kind === "inactive") return clash(reply, req.id, "Ce produit est inactif.");
+        if (kind === "tracking") return clash(reply, req.id, "Ce produit ne gère pas de stock.");
+        if (kind === "serialized") return clash(reply, req.id, "Utilisez la réception par unité pour ce produit avancé.");
+        if (unique(error)) return clash(reply, req.id, "Cette réception a déjà été enregistrée.");
+        throw error;
       }
     },
   );

@@ -9,6 +9,9 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import {
   estimatedStock,
+  findCachedSerializedUnit,
+  reserveCachedSerializedUnit,
+  releaseCachedSerializedUnits,
   queueOfflineSale,
   syncPendingOfflineSales,
   type OfflineSalePayload,
@@ -56,7 +59,24 @@ describe("offline POS desktop boundary", () => {
     expect(bridge.invoke).toHaveBeenCalledWith("queue_offline_sale", {
       payloadJson: JSON.stringify(payload),
       idempotencyKey: "stable-offline-key",
+      reservationId: null,
     });
+  });
+
+  it("keeps serialized SQLite commands behind the Tauri boundary", async () => {
+    bridge.desktop = false;
+    await expect(findCachedSerializedUnit("6111")).resolves.toBeUndefined();
+    await expect(releaseCachedSerializedUnits("cart-1")).resolves.toBeUndefined();
+    await expect(reserveCachedSerializedUnit("6111", "cart-1")).rejects.toThrow("bureau");
+    expect(bridge.invoke).not.toHaveBeenCalled();
+  });
+
+  it("looks up, reserves and releases an exact cached unit", async () => {
+    bridge.invoke.mockResolvedValueOnce({ id: 9, barcode: "6111" }).mockResolvedValueOnce({ id: 9, barcode: "6111" }).mockResolvedValueOnce(undefined);
+    await expect(findCachedSerializedUnit("6111")).resolves.toMatchObject({ id: 9 });
+    await expect(reserveCachedSerializedUnit("6111", "cart-1")).resolves.toMatchObject({ barcode: "6111" });
+    await releaseCachedSerializedUnits("cart-1", "6111");
+    expect(bridge.invoke).toHaveBeenLastCalledWith("release_cached_serialized_unit", { reservationId: "cart-1", code: "6111" });
   });
 
   it("uses ordered transitions and the Idempotency-Key header", async () => {

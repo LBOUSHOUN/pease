@@ -50,6 +50,20 @@
       "when": 1784233146876,
       "tag": "0006_needy_madelyne_pryor",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784464033366,
+      "tag": "0007_glorious_kid_colt",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1784466105030,
+      "tag": "0008_familiar_lizard",
+      "breakpoints": true
     }
   ]
 }

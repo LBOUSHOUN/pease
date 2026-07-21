@@ -17,7 +17,7 @@ import type {
   StockMovementListResponse,
   SafeUser,
 } from "@maktaba/shared-types";
-import { request } from "./api";
+import { buildApiUrl, request } from "./api";
 import { centsToMad, madToCents } from "./money";
 import { calculateStockAfter } from "./stock-utils";
 import { useScanner } from "./use-scanner";
@@ -355,6 +355,11 @@ export function ProductsPage({ user }: { user: SafeUser }) {
             Nouveau produit
           </Link>
         )}
+        {has(user, "serialized_units.export") && (
+          <a className="button secondary" href={buildApiUrl("/serialized-units/export.csv")} target="_blank" rel="noreferrer">
+            Exporter les unités CSV
+          </a>
+        )}
       </div>
       <ErrorBox value={error} />
       <DedicatedScanner onScan={lookup} />
@@ -503,10 +508,12 @@ type ProductFormState = {
   name: string;
   description: string;
   productType: "physical_product" | "service";
+  inventoryMode: "quantity" | "serialized";
   sku: string;
   manufacturerBarcode: string;
   purchasePrice: string;
   sellingPrice: string;
+  initialQuantity: string;
   wholesalePrice: string;
   wholesaleMinQuantity: string;
   minimumStock: string;
@@ -519,10 +526,12 @@ const initial: ProductFormState = {
   name: "",
   description: "",
   productType: "physical_product",
+  inventoryMode: "quantity",
   sku: "",
   manufacturerBarcode: "",
   purchasePrice: "0",
   sellingPrice: "0",
+  initialQuantity: "0",
   wholesalePrice: "0",
   wholesaleMinQuantity: "1",
   minimumStock: "0",
@@ -555,6 +564,7 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
             name: x.name,
             description: x.description ?? "",
             productType: x.productType,
+            inventoryMode: x.inventoryMode ?? "quantity",
             sku: x.sku ?? "",
             manufacturerBarcode: x.manufacturerBarcode ?? "",
             purchasePrice:
@@ -562,6 +572,7 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
                 ? "0"
                 : String(x.purchasePriceCents / 100),
             sellingPrice: String(x.sellingPriceCents / 100),
+            initialQuantity: "0",
             wholesalePrice: String(x.wholesalePriceCents / 100),
             wholesaleMinQuantity: String(x.wholesaleMinQuantity),
             minimumStock: String(x.minimumStock),
@@ -585,10 +596,15 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
         name: form.name,
         description: form.description,
         productType: form.productType,
+        inventoryMode: form.productType === "service" ? "quantity" : form.inventoryMode,
         sku: form.sku,
         manufacturerBarcode: form.manufacturerBarcode,
         purchasePriceCents: madToCents(form.purchasePrice),
         sellingPriceCents: madToCents(form.sellingPrice),
+        initialQuantity:
+          !edit && form.productType === "physical_product" && form.inventoryMode === "quantity"
+            ? Number(form.initialQuantity)
+            : 0,
         wholesalePriceCents: madToCents(form.wholesalePrice),
         wholesaleMinQuantity: Number(form.wholesaleMinQuantity),
         minimumStock: Number(form.minimumStock),
@@ -602,10 +618,8 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
         nav("/products");
       } else {
         const product = await request<ProductDetail>("/products", { method: "POST", json: body });
-        if (prefill.barcode && product.manufacturerBarcode) {
-          setCreated(product);
-          setSearchParams({}, { replace: true });
-        } else nav("/products");
+        setCreated(product);
+        setSearchParams({}, { replace: true });
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erreur");
@@ -619,11 +633,19 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
       <ErrorBox value={error} />
       {created && (
         <section className="notice" role="status">
-          <p><b>{created.name}</b> a été créé avec le code-barres {created.manufacturerBarcode}.</p>
-          <button type="button" onClick={() => {
-            enqueueGlobalScan(created.manufacturerBarcode!, "usb");
-            nav("/pos", { replace: true });
-          }}>Retour au point de vente et ajouter</button>
+          <p><b>Produit créé avec succès.</b></p>
+          <p>Stock initial : {created.currentStock} unité(s).</p>
+          {created.currentStock > 0 && created.manufacturerBarcode ? (
+            <button type="button" onClick={() => {
+              enqueueGlobalScan(created.manufacturerBarcode!, "usb");
+              nav("/pos", { replace: true });
+            }}>Retour au point de vente et ajouter</button>
+          ) : <p>Produit créé, mais aucun stock n’est disponible.</p>}
+          <button type="button" className="secondary" onClick={() => {
+            setCreated(undefined);
+            setForm({ ...initial });
+          }}>Créer un autre produit</button>
+          <button type="button" className="secondary" onClick={() => nav(`/products/${created.id}`)}>Voir le produit</button>
         </section>
       )}
       {!created && <form onSubmit={submit} className="grid-form">
@@ -672,6 +694,24 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
             onChange={(e) => set("description", e.target.value)}
           />
         </label>
+        {form.productType === "physical_product" && (
+          <details className="advanced-options">
+            <summary>Options avancées</summary>
+          <label>
+            Suivi du stock
+            <select
+              value={form.inventoryMode}
+              onChange={(e) => set("inventoryMode", e.target.value as ProductFormState["inventoryMode"])}
+              disabled={edit}
+            >
+              <option value="quantity">Quantité normale (même code-barres)</option>
+              <option value="serialized">Chaque unité a un code unique</option>
+            </select>
+            <small>Utiliser uniquement lorsque chaque unité possède un code-barres unique.</small>
+            {edit && <small>Le mode de stock ne peut pas être modifié depuis cette fiche.</small>}
+          </label>
+          </details>
+        )}
         <label>
           SKU
           <input
@@ -682,6 +722,8 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
         <label>
           Code-barres fabricant
           <input
+            data-scanner-input="true"
+            autoComplete="off"
             value={form.manufacturerBarcode}
             onChange={(e) => set("manufacturerBarcode", e.target.value)}
           />
@@ -703,6 +745,19 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
             required
           />
         </label>
+        {!edit && form.productType === "physical_product" && form.inventoryMode === "quantity" && (
+          <label>
+            Quantité initiale
+            <input
+              type="number"
+              min="0"
+              max="100000"
+              step="1"
+              value={form.initialQuantity}
+              onChange={(e) => set("initialQuantity", e.target.value)}
+            />
+          </label>
+        )}
         <label>
           Prix de gros MAD
           <input
@@ -810,12 +865,19 @@ export function ProductDetails({ user }: { user: SafeUser }) {
             Étiquette
           </Link>
         )}
+        {x.inventoryMode === "serialized" && has(user, "serialized_units.receive") && (
+          <Link className="button" to={`/serialized-receiving/new?productId=${x.id}`}>
+            Réceptionner des unités
+          </Link>
+        )}
       </div>
       <dl className="details">
         <dt>Catégorie</dt>
         <dd>{x.categoryName}</dd>
         <dt>Type</dt>
         <dd>{x.productType === "service" ? "Service" : "Produit physique"}</dd>
+        <dt>Mode de stock</dt>
+        <dd>{x.inventoryMode === "serialized" ? "Suivi par unité" : "Quantité"}</dd>
         <dt>SKU</dt>
         <dd>{x.sku || "—"}</dd>
         <dt>Code interne</dt>
@@ -906,9 +968,7 @@ export function StockPage({ user }: { user: SafeUser }) {
         <h1>Stock</h1>
         <div>
           {has(user, "stock.adjust") && (
-            <Link className="button" to="/stock/adjust">
-              Ajuster
-            </Link>
+            <><Link className="button" to="/stock/receive">Réception de stock</Link>{" "}<Link className="button secondary" to="/stock/adjust">Ajuster</Link></>
           )}{" "}
           <Link className="button secondary" to="/stock/movements">
             Mouvements

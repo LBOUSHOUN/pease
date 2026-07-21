@@ -454,12 +454,25 @@ export async function registerPhase3(app: FastifyInstance) {
       )
         return bad(reply, "La clé d’idempotence ne correspond pas à la vente.");
       const x = p.data,
-        merged = new Map<number, number>();
-      for (const line of x.items)
+        merged = new Map<number, number>(),
+        unitBarcodes = new Map<number, string[]>(),
+        serializedUnitIds = new Map<number, number[]>();
+      for (const line of x.items) {
         merged.set(
           line.productId,
           (merged.get(line.productId) ?? 0) + line.quantity,
         );
+        if (line.unitBarcodes?.length)
+          unitBarcodes.set(line.productId, [
+            ...(unitBarcodes.get(line.productId) ?? []),
+            ...line.unitBarcodes.map((barcode) => barcode.trim().toLowerCase()),
+          ]);
+        if (line.serializedUnits?.length)
+          serializedUnitIds.set(line.productId, [
+            ...(serializedUnitIds.get(line.productId) ?? []),
+            ...line.serializedUnits.map((unit) => unit.id),
+          ]);
+      }
       try {
         const result = await sql.begin(async (tx) => {
           await tx`select pg_advisory_xact_lock(${req.user!.id},31002)`;
@@ -477,6 +490,20 @@ export async function registerPhase3(app: FastifyInstance) {
             if (!product.is_active) throw new Error("INACTIVE");
             const qty = merged.get(Number(product.id))!,
               price = Number(product.selling_price_cents);
+            if (product.inventory_mode === "serialized") {
+              const codes = unitBarcodes.get(Number(product.id)) ?? [];
+              if (codes.length !== qty || new Set(codes).size !== codes.length)
+                throw new Error("SERIALIZED_UNITS_REQUIRED");
+              const units = await tx<Row[]>`select id,barcode,status from product_units
+                where product_id=${product.id} and lower(trim(barcode)) in ${sql(codes)} for update`;
+              if (units.length !== codes.length || units.some((unit) => unit.status !== "available"))
+                throw new Error("SERIALIZED_UNIT_UNAVAILABLE");
+              const requestedIds = serializedUnitIds.get(Number(product.id));
+              if (requestedIds && (requestedIds.length !== units.length || units.some((unit) => !requestedIds.includes(Number(unit.id)))))
+                throw new Error("SERIALIZED_UNIT_MISMATCH");
+            } else if ((unitBarcodes.get(Number(product.id))?.length ?? 0) > 0) {
+              throw new Error("SERIALIZED_UNITS_UNEXPECTED");
+            }
             if (
               product.product_type === "physical_product" &&
               product.track_stock &&
@@ -534,14 +561,23 @@ export async function registerPhase3(app: FastifyInstance) {
           for (const product of products) {
             const qty = merged.get(Number(product.id))!,
               line = qty * Number(product.selling_price_cents);
-            await tx`insert into sale_items(sale_id,product_id,product_name_snapshot,sku_snapshot,barcode_snapshot,product_type_snapshot,quantity,unit_price_cents,purchase_price_snapshot_cents,discount_cents,line_total_cents) values(${sale!.id},${product.id},${product.name},${product.sku},${product.internal_barcode},${product.product_type},${qty},${product.selling_price_cents},${product.purchase_price_cents},0,${line})`;
+            const [saleItem] = await tx<Row[]>`insert into sale_items(sale_id,product_id,product_name_snapshot,sku_snapshot,barcode_snapshot,product_type_snapshot,quantity,unit_price_cents,purchase_price_snapshot_cents,discount_cents,line_total_cents) values(${sale!.id},${product.id},${product.name},${product.sku},${product.internal_barcode},${product.product_type},${qty},${product.selling_price_cents},${product.purchase_price_cents},0,${line}) returning id`;
             if (
               product.product_type === "physical_product" &&
               product.track_stock
             ) {
-              const before = Number(product.current_stock),
-                after = before - qty;
-              await tx`update products set current_stock=${after},updated_at=now() where id=${product.id}`;
+              const before = Number(product.current_stock);
+              let after = before - qty;
+              if (product.inventory_mode === "serialized") {
+                const codes = unitBarcodes.get(Number(product.id))!;
+                const changed = await tx<Row[]>`update product_units set status='sold',sale_id=${sale!.id},sale_item_id=${saleItem!.id},sold_at=now(),updated_at=now()
+                  where product_id=${product.id} and status='available' and lower(trim(barcode)) in ${sql(codes)} returning id`;
+                if (changed.length !== qty) throw new Error("SERIALIZED_UNIT_UNAVAILABLE");
+                const [reconciled] = await tx<Row[]>`select current_stock from products where id=${product.id}`;
+                after = Number(reconciled!.current_stock);
+              } else {
+                await tx`update products set current_stock=${after},updated_at=now() where id=${product.id}`;
+              }
               await tx`insert into stock_movements(product_id,movement_type,quantity_change,stock_before,stock_after,reference_type,reference_id,reason,created_by) values(${product.id},'sale',${-qty},${before},${after},'sale',${sale!.id},'Vente',${req.user!.id})`;
             }
           }
@@ -559,6 +595,14 @@ export async function registerPhase3(app: FastifyInstance) {
       } catch (e) {
         const m = (e as Error).message;
         if (m === "STOCK") return bad(reply, "Stock insuffisant.", 409);
+        if (m === "SERIALIZED_UNITS_REQUIRED")
+          return bad(reply, "Scannez chaque unité sérialisée avant la vente.", 409);
+        if (m === "SERIALIZED_UNIT_UNAVAILABLE")
+          return bad(reply, "Cette unité a déjà été vendue ou n’est plus disponible.", 409);
+        if (m === "SERIALIZED_UNIT_MISMATCH")
+          return bad(reply, "La référence de l’unité ne correspond pas à son code-barres.", 409);
+        if (m === "SERIALIZED_UNITS_UNEXPECTED")
+          return bad(reply, "Les codes d’unité ne sont pas autorisés pour ce produit.", 400);
         if (m === "INACTIVE")
           return bad(reply, "Un produit est désactivé.", 409);
         if (m === "PRODUCT") return bad(reply, "Produit introuvable.", 404);
