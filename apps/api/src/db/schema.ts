@@ -89,6 +89,8 @@ export const sessions = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     tokenHash: text("token_hash").notNull().unique(),
+    sessionType: text("session_type").notNull().default("browser"),
+    deviceLabel: text("device_label"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     createdAt: ts("created_at"),
@@ -98,6 +100,7 @@ export const sessions = pgTable(
     index("sessions_user_idx").on(t.userId),
     index("sessions_token_idx").on(t.tokenHash),
     index("sessions_expiry_idx").on(t.expiresAt),
+    check("sessions_type_ck", sql`${t.sessionType} in ('browser','desktop')`),
   ],
 );
 export const categories = pgTable(
@@ -265,6 +268,7 @@ export const registerSessions = pgTable(
       mode: "number",
     }).notNull(),
     closedAt: timestamp("closed_at", { withTimezone: true }),
+    closedById: integer("closed_by").references(() => users.id),
     expectedClosingCents: bigint("expected_closing_cents", { mode: "number" }),
     actualClosingCents: bigint("actual_closing_cents", { mode: "number" }),
     differenceCents: bigint("difference_cents", { mode: "number" }),
@@ -279,7 +283,7 @@ export const registerSessions = pgTable(
   },
   (t) => [
     uniqueIndex("one_open_register")
-      .on(t.cashierId)
+      .on(sql`(1)`)
       .where(sql`${t.status}='open'`),
     uniqueIndex("register_open_idempotency_uq")
       .on(t.cashierId, t.openingIdempotencyKey)

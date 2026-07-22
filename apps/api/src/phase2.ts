@@ -23,6 +23,7 @@ import {
   stockAdjustmentSchema,
   stockFiltersSchema,
   stockMovementFiltersSchema,
+  barcodeValueSchema,
 } from "@maktaba/validation";
 import { db } from "./db/index.js";
 import {
@@ -367,6 +368,38 @@ export async function registerPhase2(app: FastifyInstance) {
     },
   );
   app.post(
+    "/api/products/barcodes/generate",
+    { preHandler: requirePermission("products.create") },
+    async (req, reply) => {
+      const result = await db.transaction(async (tx) => {
+        const [setting] = await tx
+          .update(appSettings)
+          .set({
+            nextBarcodeSequence: raw`${appSettings.nextBarcodeSequence}+1`,
+            updatedAt: new Date(),
+          })
+          .where(eq(appSettings.id, 1))
+          .returning({
+            prefix: appSettings.barcodePrefix,
+            next: appSettings.nextBarcodeSequence,
+          });
+        if (!setting) throw new Error("settings missing");
+        const prefix = setting.prefix.trim().toUpperCase();
+        const barcode = `${prefix}${String(setting.next - 1).padStart(9, "0")}`;
+        if (!barcodeValueSchema.safeParse(barcode).success)
+          throw new Error("invalid barcode configuration");
+        await tx.insert(auditLogs).values({
+          userId: req.user!.id,
+          action: "product.internal_barcode.generated",
+          entityType: "product_barcode",
+          newValuesJson: JSON.stringify({ barcode }),
+        });
+        return barcode;
+      });
+      return reply.code(201).send({ barcode: result });
+    },
+  );
+  app.post(
     "/api/products",
     { preHandler: requirePermission("products.create") },
     async (req, reply) => {
@@ -398,7 +431,7 @@ export async function registerPhase2(app: FastifyInstance) {
             });
           if (!setting) throw new Error("settings missing");
           const { initialQuantity, ...productInput } = p.data;
-          const internal = `${setting.prefix}-${String(setting.next - 1).padStart(6, "0")}`,
+          const internal = `${setting.prefix.trim().toUpperCase()}${String(setting.next - 1).padStart(9, "0")}`,
             qr = `${setting.prefix}-P-${internal}`,
             [row] = await tx
               .insert(products)

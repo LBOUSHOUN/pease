@@ -446,6 +446,9 @@ footer {
   max-width: 38mm;
   height: 12mm;
 }
+.product-label .label-linear-barcode { width: min(100%, 260px); height: auto; max-height: 68px; margin: .2rem auto; display: block; overflow: visible; }
+.label-barcode-value { font-family: ui-monospace, Consolas, monospace; font-size: .78rem; letter-spacing: .04em; background: transparent; color: #000; overflow-wrap: anywhere; }
+.label-barcode-error { color: #9b2c2c; font-size: .75rem; font-weight: 650; }
 .product-label img {
   width: 12mm;
   height: 12mm;
@@ -585,3 +588,50 @@ button, .button { min-height: 42px; display: inline-flex; align-items: center; j
 .receiving-confirm span { color: var(--muted, #64748b); font-size: .875rem; }
 .receiving-confirm .form-actions { grid-column: 1 / -1; }
 @media (max-width: 700px) { .receiving-confirm { grid-template-columns: 1fr; } }
+.connection-diagnostics { margin-top: 1rem; text-align: left; }
+.connection-diagnostics dl { display: grid; grid-template-columns: minmax(9rem, .8fr) minmax(0, 1.4fr); gap: .4rem 1rem; font-size: .82rem; }
+.connection-diagnostics dt { color: var(--muted, #64748b); }
+.connection-diagnostics dd { margin: 0; overflow-wrap: anywhere; }
+.inline-actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.barcode-field { grid-column: 1 / -1; }
+.product-form { width: min(100%, 960px); margin-inline: auto; padding-bottom: 5.5rem; }
+.product-form > label, .product-form > details, .form-section-card { background: #fff; border: 1px solid var(--color-border, #dfe7e4); border-radius: 12px; padding: 1rem; }
+.product-form label { display: grid; gap: .45rem; font-weight: 650; min-width: 0; }
+.product-form label small { font-weight: 400; color: var(--muted, #587068); }
+.form-section-title { grid-column: 1 / -1; margin: .75rem 0 -.35rem; font-size: 1.05rem; color: #173d32; }
+.barcode-field input { width: 100%; min-height: 44px; }
+.barcode-field .inline-actions > button:nth-child(4), .barcode-field .inline-actions > button:nth-child(5) { display: none; }
+.field-error { color: #a3362a !important; }
+.stock-toggle { display: flex !important; flex-direction: row; align-items: center; gap: .65rem !important; min-height: 44px; }
+.stock-toggle input[type="checkbox"] { appearance: none; width: 42px; height: 24px; min-height: 24px; padding: 0; margin: 0; border: 1px solid #8fa39c; border-radius: 999px; background: #dfe7e4; position: relative; flex: 0 0 auto; }
+.stock-toggle input[type="checkbox"]::after { content: ""; position: absolute; width: 18px; height: 18px; left: 2px; top: 2px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 25%); transition: transform .12s ease; }
+.stock-toggle input[type="checkbox"]:checked { background: #087f5b; border-color: #087f5b; }
+.stock-toggle input[type="checkbox"]:checked::after { transform: translateX(18px); }
+.stock-toggle input[type="checkbox"]:focus-visible { outline: 3px solid #74c0a8; outline-offset: 2px; }
+.product-form-actions { position: sticky; bottom: 0; z-index: 5; grid-column: 1 / -1; justify-content: flex-end; padding: .8rem; background: rgb(255 255 255 / 96%); border: 1px solid var(--color-border, #dfe7e4); border-radius: 12px; box-shadow: 0 -5px 18px rgb(23 35 31 / 8%); }
+.product-form-actions > button:first-child { display: none; }
+@media (max-width: 700px) { .product-form-actions > button { flex: 1 1 100%; } .product-form { padding-bottom: 7rem; } }
+.receipt-document { margin: 0 auto; padding: 1.25rem; background: #fff; color: #111; }
+.receipt-format-thermal .receipt-document { width: 80mm; max-width: 100%; font-size: 12px; }
+.receipt-format-a4 .receipt-document { width: 210mm; max-width: 100%; }
+.receipt-logo { display: block; width: 72px; height: 72px; object-fit: contain; margin: 0 auto .4rem; }
+.receipt-head { text-align: center; display: grid; gap: .2rem; }
+.receipt-meta { display: grid; grid-template-columns: auto 1fr; gap: .25rem .75rem; margin: 1rem 0; }
+.receipt-meta dd { margin: 0; text-align: right; }
+.receipt-grand-total { font-size: 1.12em; font-weight: 800; border-top: 2px solid currentColor; padding-top: .5rem; }
+.receipt-footer { margin-top: 1.25rem; text-align: center; }
+.receipt-footer p { margin: .2rem; }
+.product-label span { overflow-wrap: anywhere; }
+.label-format-a4 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@page thermal-receipt { size: 80mm auto; margin: 2mm; }
+@page a4-receipt { size: A4; margin: 12mm; }
+@media print {
+  body * { visibility: hidden !important; }
+  .receipt-document, .receipt-document *, .labels, .labels * { visibility: visible !important; }
+  .receipt-document, .labels { position: absolute; inset: 0 auto auto 0; }
+  .receipt-format-thermal .receipt-document { page: thermal-receipt; width: 76mm; padding: 0; }
+  .receipt-format-a4 .receipt-document { page: a4-receipt; width: 100%; padding: 0; }
+  .receipt-document table { width: 100%; table-layout: fixed; }
+  .receipt-document td, .receipt-document th { overflow-wrap: anywhere; }
+  .receipt-document tr, .receipt-document .details { break-inside: avoid; }
+}

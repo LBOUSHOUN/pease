@@ -231,7 +231,7 @@ export async function registerPhase4(app: FastifyInstance) {
           if (x.paymentSource === "cash_register") {
             [reg] = await tx<
               Row[]
-            >`select id from cash_register_sessions where cashier_id=${req.user!.id} and status='open' for update`;
+            >`select id from cash_register_sessions where status='open' for update`;
             if (!reg) throw new Error("REGISTER");
           }
           const [s] = await tx<
@@ -339,7 +339,7 @@ export async function registerPhase4(app: FastifyInstance) {
           if (cash > 0 && x.paymentSource === "cash_register") {
             [reg] = await tx<
               Row[]
-            >`select id from cash_register_sessions where cashier_id=${req.user!.id} and status='open' for update`;
+            >`select id from cash_register_sessions where status='open' for update`;
             if (!reg) throw new Error("REGISTER");
           }
           const [settings] = await tx<
@@ -470,7 +470,7 @@ export async function registerPhase4(app: FastifyInstance) {
           if (x.paymentSource === "cash_register") {
             [reg] = await tx<
               Row[]
-            >`select id from cash_register_sessions where cashier_id=${req.user!.id} and status='open' for update`;
+            >`select id from cash_register_sessions where status='open' for update`;
             if (!reg) throw new Error("REGISTER");
           }
           const [e] = await tx<
@@ -549,7 +549,7 @@ export async function registerPhase4(app: FastifyInstance) {
           if (original.payment_source === "cash_register") {
             [reg] = await tx<
               Row[]
-            >`select id from cash_register_sessions where cashier_id=${req.user!.id} and status='open' for update`;
+            >`select id from cash_register_sessions where status='open' for update`;
             if (!reg) throw new Error("REGISTER");
           }
           const [c] = await tx<
@@ -728,7 +728,7 @@ export async function registerPhase4(app: FastifyInstance) {
           if (cashRefund > 0) {
             [reg] = await tx<
               Row[]
-            >`select id from cash_register_sessions where cashier_id=${req.user!.id} and status='open' for update`;
+            >`select id from cash_register_sessions where status='open' for update`;
             if (!reg) throw new Error("REGISTER");
           }
           const settings = await tx<

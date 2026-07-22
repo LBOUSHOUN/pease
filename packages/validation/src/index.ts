@@ -46,7 +46,14 @@ const optionalCode = z
   .optional()
   .nullable()
   .transform((v) => v || null);
-export const barcodeValueSchema = z.string().trim().min(2).max(100);
+export const barcodeValueSchema = z
+  .string()
+  .trim()
+  .min(2)
+  .max(100)
+  .refine((value) => !/[\u0000-\u001f\u007f-\u009f]/u.test(value), {
+    message: "Le code-barres contient des caractÃ¨res non imprimables.",
+  });
 const queryBoolean = z.preprocess(
   (v) => (v === "true" ? true : v === "false" ? false : v),
   z.boolean(),

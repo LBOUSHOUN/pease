@@ -18,11 +18,14 @@ import {
 } from "react-router-dom";
 import type { ProductLookup, ProductUnitLookup, RegisterStatus, SafeUser } from "@maktaba/shared-types";
 import { request, AuthResponse, ApiFailure } from "./api";
-import { initializeAuth, resetAuthInitialization } from "./auth-bootstrap";
+import { initializeAuth, OfflineColdStartError, resetAuthInitialization } from "./auth-bootstrap";
 import { singleFlight } from "./single-flight";
-import { checkConnection, isTauriRuntime, refreshOfflineCache } from "./offline-pos";
+import { checkConnection, getOfflineCacheStatus, getOfflineQueueSummary, isTauriRuntime, refreshOfflineCache, syncPendingOfflineSales } from "./offline-pos";
 import { useScanner } from "./use-scanner";
 import { enqueueGlobalScan, hasBlockingScannerContext } from "./global-scanner";
+import { deleteDesktopSessionToken, DesktopTokenStorageError, isNativeDesktop, saveDesktopSessionToken } from "./desktop-session";
+import { connectionDiagnostics, recordConnectionAttempt, resetConnectionDiagnostics, type ConnectionDiagnostics } from "./connection-diagnostics";
+import { clearOfflineAuthSnapshot, saveOfflineAuthSnapshot } from "./offline-auth";
 const Dashboard = lazy(() => import("./Dashboard"));
 const phase2 = () => import("./Phase2");
 const CategoriesPage = lazy(() =>
@@ -155,6 +158,8 @@ export default function App() {
   const [user, setUser] = useState<SafeUser | null | undefined>(),
     [needsOwner, setNeedsOwner] = useState(false),
     [offline, setOffline] = useState(false),
+    [authNotice, setAuthNotice] = useState(""),
+    [diagnostics, setDiagnostics] = useState<ConnectionDiagnostics>(() => connectionDiagnostics()),
     [loggingOut, setLoggingOut] = useState(false),
     [logoutError, setLogoutError] = useState("");
   const logoutAction = useRef<() => Promise<void>>(undefined);
@@ -163,13 +168,30 @@ export default function App() {
       const result = await initializeAuth();
       setNeedsOwner(result.needsOwner);
       setUser(result.user);
-      setOffline(false);
+      setOffline(result.offline);
+      setDiagnostics(connectionDiagnostics());
     } catch (error) {
       if (error instanceof ApiFailure && error.status === 401) {
         setOffline(false);
+        setAuthNotice(
+          error.data.code === "SESSION_EXPIRED" ? "Votre session a expiré. Reconnectez-vous."
+            : error.data.code === "SESSION_REVOKED" ? "Votre session a été révoquée. Reconnectez-vous."
+              : error.data.code === "SESSION_INVALID" ? "Votre session n’est plus valide. Reconnectez-vous." : "",
+        );
+        setUser(null);
+      } else if (error instanceof DesktopTokenStorageError) {
+        recordConnectionAttempt({ category: "credential_manager", errorName: error.name, message: error.message, fetchAttempted: false });
+        setOffline(false);
+        setAuthNotice(error.message);
+        setUser(null);
+      } else if (error instanceof OfflineColdStartError) {
+        setOffline(true);
+        setAuthNotice(error.message);
         setUser(null);
       } else {
+        if (!(error instanceof ApiFailure)) recordConnectionAttempt({ category: "unexpected", errorName: error instanceof Error ? error.name : "Error", message: error instanceof Error ? error.message : String(error) });
         setOffline(true);
+        setDiagnostics(connectionDiagnostics());
         setUser((current) => (current === undefined ? null : current));
       }
     }
@@ -195,22 +217,31 @@ export default function App() {
   }, [refresh]);
   useEffect(() => {
     if (!user || offline || !isTauriRuntime()) return;
-    void request<RegisterStatus>("/register/status")
-      .then((register) => refreshOfflineCache({ isOpen: register.isOpen, sessionId: register.sessionId }))
-      .catch(() => undefined);
+    void (async () => {
+      await syncPendingOfflineSales(request, user.id).catch(() => undefined);
+      const register = await request<RegisterStatus>("/register/status");
+      await refreshOfflineCache({ isOpen: register.isOpen, sessionId: register.sessionId });
+    })().catch(() => undefined);
   }, [offline, user]);
   if (user === undefined)
     return <div className="center">Initialisation sécurisée…</div>;
-  const retry = () => {
+  const retry = async () => {
+    resetConnectionDiagnostics();
     resetAuthInitialization();
     setUser(undefined);
-    void refresh();
+    setAuthNotice("");
+    await refresh();
   };
-  logoutAction.current ??= singleFlight(async () => {
+  logoutAction.current = singleFlight(async () => {
     setLoggingOut(true);
     setLogoutError("");
     try {
-      await request<void>("/auth/logout", { method: "POST" });
+      if (offline) {
+        const pending = (await getOfflineQueueSummary())?.pendingCount ?? 0;
+        if (pending > 0 && !window.confirm(`${pending} opération(s) resteront en attente et seront verrouillées jusqu’à la reconnexion du même utilisateur. Continuer ?`)) return;
+      } else await request<void>("/auth/logout", { method: "POST" });
+      await clearOfflineAuthSnapshot();
+      await deleteDesktopSessionToken();
       resetAuthInitialization();
       window.history.replaceState({}, "", "/login");
       setUser(null);
@@ -224,7 +255,7 @@ export default function App() {
   });
   const logout = () => logoutAction.current!();
   if (offline && (user === undefined || user === null))
-    return <Offline retry={retry} />;
+    return <Offline retry={retry} diagnostics={diagnostics} />;
   if (needsOwner)
     return (
       <Onboarding
@@ -237,7 +268,9 @@ export default function App() {
   if (!user)
     return (
       <Login
+        notice={authNotice}
         done={(value) => {
+          setAuthNotice("");
           window.history.replaceState({}, "", "/");
           setUser(value);
         }}
@@ -261,6 +294,7 @@ export default function App() {
         loggingOut={loggingOut}
         logoutError={logoutError}
         offline={offline}
+        retry={retry}
       />
     </BrowserRouter>
   );
@@ -307,6 +341,11 @@ function Onboarding({ done }: { done: (u: SafeUser) => void }) {
           barcodePrefix: field(f, "prefix"),
         },
       });
+      if (isNativeDesktop()) {
+        if (!x.desktopSession) throw new DesktopTokenStorageError();
+        await saveDesktopSessionToken(x.desktopSession.token);
+        await saveOfflineAuthSnapshot(x.user);
+      }
       done(x.user);
     } catch (x) {
       setError(x instanceof Error ? x.message : "Erreur");
@@ -340,7 +379,7 @@ function Onboarding({ done }: { done: (u: SafeUser) => void }) {
     </FormShell>
   );
 }
-function Login({ done }: { done: (u: SafeUser) => void }) {
+function Login({ done, notice }: { done: (u: SafeUser) => void; notice: string }) {
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [showPassword, setShowPassword] = useState(false),
@@ -362,17 +401,19 @@ function Login({ done }: { done: (u: SafeUser) => void }) {
     setBusy(true);
     setError("");
     try {
-      done(
-        (
-          await request<AuthResponse>("/auth/login", {
+      const response = await request<AuthResponse>("/auth/login", {
             method: "POST",
             json: {
               login: field(f, "login"),
               password: field(f, "password"),
             },
-          })
-        ).user,
-      );
+          });
+      if (isNativeDesktop()) {
+        if (!response.desktopSession) throw new DesktopTokenStorageError();
+        await saveDesktopSessionToken(response.desktopSession.token);
+        await saveOfflineAuthSnapshot(response.user);
+      }
+      done(response.user);
     } catch (x) {
       setError(x instanceof Error ? x.message : "Connexion impossible");
       const password = e.currentTarget.elements.namedItem("password");
@@ -384,7 +425,7 @@ function Login({ done }: { done: (u: SafeUser) => void }) {
     }
   };
   return (
-    <FormShell title="Connexion" error={error}>
+    <FormShell title="Connexion" error={error || notice}>
       <form onSubmit={submit}>
         <label>
           Identifiant ou e-mail
@@ -431,17 +472,19 @@ function Password({
     if (field(f, "new") !== field(f, "confirm"))
       return setError("Les mots de passe ne correspondent pas");
     try {
-      done(
-        (
-          await request<AuthResponse>("/auth/change-password", {
+      const response = await request<AuthResponse>("/auth/change-password", {
             method: "POST",
             json: {
               currentPassword: field(f, "current"),
               newPassword: field(f, "new"),
             },
-          })
-        ).user,
-      );
+          });
+      if (isNativeDesktop()) {
+        if (!response.desktopSession) throw new DesktopTokenStorageError();
+        await saveDesktopSessionToken(response.desktopSession.token);
+        await saveOfflineAuthSnapshot(response.user);
+      }
+      done(response.user);
     } catch (x) {
       setError(x instanceof Error ? x.message : "Erreur");
     }
@@ -486,18 +529,51 @@ function Password({
     </FormShell>
   );
 }
+function OfflineHome({ user }: { user: SafeUser }) {
+  const [cache, setCache] = useState<Awaited<ReturnType<typeof getOfflineCacheStatus>>>(),
+    [queue, setQueue] = useState<Awaited<ReturnType<typeof getOfflineQueueSummary>>>();
+  useEffect(() => { void Promise.all([getOfflineCacheStatus(), getOfflineQueueSummary()]).then(([c, q]) => { setCache(c); setQueue(q); }); }, []);
+  return <main className="page">
+    <h1>Mode hors ligne sécurisé</h1>
+    <p>Session locale de <strong>{user.fullName}</strong>. Les autorisations en ligne mises en cache restent appliquées.</p>
+    <div className="metrics">
+      <article><small>Dernière synchronisation</small><strong>{cache?.lastRefreshAt ? new Date(cache.lastRefreshAt).toLocaleString("fr-FR") : "Indisponible"}</strong></article>
+      <article><small>Produits en cache</small><strong>{cache?.productCount ?? 0}</strong></article>
+      <article><small>Ventes en attente</small><strong>{queue?.pendingCount ?? 0}</strong></article>
+      <article><small>Caisse observée</small><strong>{cache?.register?.isOpen ? "Ouverte" : "Fermée"}</strong></article>
+    </div>
+    <p>Les données affichées datent de la dernière synchronisation. Seules les ventes comptant autorisées peuvent être mises en attente.</p>
+    <div className="form-actions"><NavLink to="/pos">Ouvrir le point de vente</NavLink><NavLink to="/offline-queue">Voir les opérations hors ligne</NavLink></div>
+  </main>;
+}
+
+function OfflineRegister() {
+  const [cache, setCache] = useState<Awaited<ReturnType<typeof getOfflineCacheStatus>>>();
+  useEffect(() => { void getOfflineCacheStatus().then(setCache); }, []);
+  return <main className="page">
+    <h1>Caisse — état hors ligne</h1>
+    <div className="section-card">
+      <p><strong>{cache?.register?.isOpen ? "Ouverte lors de la dernière synchronisation" : "Fermée lors de la dernière synchronisation"}</strong></p>
+      <p>Dernière synchronisation : {cache?.lastRefreshAt ? new Date(cache.lastRefreshAt).toLocaleString("fr-FR") : "indisponible"}</p>
+      <p>L’ouverture, la fermeture et les mouvements manuels sont désactivés hors ligne.</p>
+    </div>
+  </main>;
+}
+
 function Layout({
   user,
   logout,
   loggingOut,
   logoutError,
   offline,
+  retry,
 }: {
   user: SafeUser;
   logout: () => void;
   loggingOut: boolean;
   logoutError: string;
   offline: boolean;
+  retry: () => Promise<void>;
 }) {
   const [menu, setMenu] = useState(false),
     [scannerEnabled, setScannerEnabled] = useState(true),
@@ -574,16 +650,16 @@ function Layout({
         </div>
         <nav aria-label="Modules">
           <NavLink to="/">Tableau de bord</NavLink>
-          {user.permissions.includes("products.view") && (
+          {!offline && user.permissions.includes("products.view") && (
             <NavLink to="/products">Produits</NavLink>
           )}
-          {user.permissions.includes("categories.view") && (
+          {!offline && user.permissions.includes("categories.view") && (
             <NavLink to="/categories">Catégories</NavLink>
           )}
-          {user.permissions.includes("stock.view") && (
+          {!offline && user.permissions.includes("stock.view") && (
             <NavLink to="/stock">Stock</NavLink>
           )}
-          {user.permissions.includes("stock.adjust") && (
+          {!offline && user.permissions.includes("stock.adjust") && (
             <NavLink to="/stock/receive">Réception de stock</NavLink>
           )}
           {user.permissions.includes("register.view") && (
@@ -595,37 +671,37 @@ function Layout({
           {isTauriRuntime() && user.permissions.includes("pos.use") && (
             <NavLink to="/offline-queue">Opérations hors ligne</NavLink>
           )}
-          {user.permissions.includes("sales.view") && (
+          {!offline && user.permissions.includes("sales.view") && (
             <NavLink to="/sales">Ventes</NavLink>
           )}
-          {user.permissions.includes("customers.view") && (
+          {!offline && user.permissions.includes("customers.view") && (
             <NavLink to="/customers">Clients</NavLink>
           )}
-          {user.permissions.includes("suppliers.view") && (
+          {!offline && user.permissions.includes("suppliers.view") && (
             <NavLink to="/suppliers">Fournisseurs</NavLink>
           )}
-          {user.permissions.includes("purchases.view") && (
+          {!offline && user.permissions.includes("purchases.view") && (
             <NavLink to="/purchases">Achats</NavLink>
           )}
-          {user.permissions.includes("expenses.view") && (
+          {!offline && user.permissions.includes("expenses.view") && (
             <NavLink to="/expenses">Dépenses</NavLink>
           )}
-          {user.permissions.includes("returns.view") && (
+          {!offline && user.permissions.includes("returns.view") && (
             <NavLink to="/returns">Retours</NavLink>
           )}
-          {user.permissions.includes("users.view") && (
+          {!offline && user.permissions.includes("users.view") && (
             <NavLink to="/employees">Employés</NavLink>
           )}
-          {user.permissions.some((p) => p.startsWith("reports.view_")) && (
+          {!offline && user.permissions.some((p) => p.startsWith("reports.view_")) && (
             <NavLink to="/reports">Rapports</NavLink>
           )}
-          {user.permissions.includes("audit.view") && (
+          {!offline && user.permissions.includes("audit.view") && (
             <NavLink to="/audit">Audit</NavLink>
           )}
-          {user.permissions.includes("settings.view") && (
+          {!offline && user.permissions.includes("settings.view") && (
             <NavLink to="/settings">Paramètres</NavLink>
           )}
-          {user.permissions.includes("backups.create") && (
+          {!offline && user.permissions.includes("backups.create") && (
             <NavLink to="/backups">Sauvegardes</NavLink>
           )}
         </nav>
@@ -642,7 +718,8 @@ function Layout({
       <div className="main">
         {offline && (
           <div className="offline-banner" role="status">
-            Mode hors ligne — certaines fonctions sont indisponibles.
+            Mode hors ligne sécurisé — profil et cache vérifiés. Certaines fonctions sont indisponibles.
+            <button type="button" className="secondary" onClick={() => void retry()}>Réessayer</button>
           </div>
         )}
         <header>
@@ -671,7 +748,7 @@ function Layout({
           </div>
         )}
         <div className="page-scroll">
-        {offline && !["/pos", "/offline-queue"].includes(loc.pathname) ? (
+        {offline && !["/", "/register", "/pos", "/offline-queue"].includes(loc.pathname) ? (
           <main className="page">
             <h1>Fonction indisponible hors ligne</h1>
             <p>Reconnectez-vous au serveur. Seules les ventes comptant avec un cache valide sont disponibles dans l’application de bureau.</p>
@@ -682,7 +759,7 @@ function Layout({
             path="/"
             element={
               <Suspense fallback={<main className="page">Chargement…</main>}>
-                <Dashboard user={user} />
+                {offline ? <OfflineHome user={user} /> : <Dashboard user={user} />}
               </Suspense>
             }
           />
@@ -721,9 +798,9 @@ function Layout({
           <Route
             path="/products/new"
             element={
-              <Lazy>
-                <ProductForm />
-              </Lazy>
+              user.permissions.includes("products.create") ? (
+                <Lazy><ProductForm user={user} offline={offline} /></Lazy>
+              ) : <Navigate to="/forbidden" replace />
             }
           />
           <Route
@@ -738,7 +815,7 @@ function Layout({
             path="/products/:id/edit"
             element={
               <Lazy>
-                <ProductForm edit />
+                <ProductForm edit user={user} offline={offline} />
               </Lazy>
             }
           />
@@ -782,7 +859,7 @@ function Layout({
             path="/register"
             element={
               <Lazy>
-                <RegisterPage user={user} />
+                {offline ? <OfflineRegister /> : <RegisterPage user={user} />}
               </Lazy>
             }
           />
@@ -878,7 +955,7 @@ function Layout({
             path="/offline-queue"
             element={
               <Lazy>
-                <OfflineQueuePage />
+                <OfflineQueuePage user={user} />
               </Lazy>
             }
           />
@@ -892,6 +969,14 @@ function Layout({
           />
           <Route
             path="/sales/:id"
+            element={
+              <Lazy>
+                <SaleDetails />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/sales/:id/receipt"
             element={
               <Lazy>
                 <SaleDetails />
@@ -1143,14 +1228,38 @@ function Lazy({ children }: { children: React.ReactNode }) {
     </Suspense>
   );
 }
-function Offline({ retry }: { retry: () => void }) {
+function Offline({ retry, diagnostics }: { retry: () => Promise<void>; diagnostics: ConnectionDiagnostics }) {
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    try { await retry(); } finally { setBusy(false); }
+  };
   return (
     <State title="Connexion indisponible">
       <p>
         L’API ne répond pas. Les opérations financières ne sont jamais mises en
         file hors ligne.
       </p>
-      <button onClick={retry}>Réessayer</button>
+      <button onClick={() => void run()} disabled={busy}>{busy ? "Connexion en cours…" : "Réessayer"}</button>
+      <details className="connection-diagnostics" open>
+        <summary>Diagnostic de connexion</summary>
+        <dl>
+          <dt>Origine de l’application</dt><dd>{diagnostics.applicationOrigin}</dd>
+          <dt>Protocole</dt><dd>{diagnostics.protocol}</dd>
+          <dt>Nom d’hôte</dt><dd>{diagnostics.hostname}</dd>
+          <dt>Exécution Tauri</dt><dd>{diagnostics.isTauri ? "oui" : "non"}</dd>
+          <dt>Base API configurée</dt><dd>{diagnostics.apiBaseUrl}</dd>
+          <dt>URL de santé testée</dt><dd>{diagnostics.healthUrl}</dd>
+          <dt>Transport HTTP</dt><dd>{diagnostics.transport === "native" ? "Tauri natif" : "Navigateur"}</dd>
+          <dt>Requête tentée</dt><dd>{diagnostics.fetchAttempted ? "oui" : "non"}</dd>
+          <dt>Catégorie</dt><dd>{diagnostics.category}</dd>
+          <dt>Nom de l’erreur</dt><dd>{diagnostics.errorName}</dd>
+          <dt>Message</dt><dd>{diagnostics.message}</dd>
+          <dt>Statut HTTP</dt><dd>{diagnostics.httpStatus ?? "—"}</dd>
+          <dt>Horodatage</dt><dd>{diagnostics.testedAt}</dd>
+        </dl>
+      </details>
     </State>
   );
 }

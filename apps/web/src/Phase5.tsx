@@ -1,7 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import JsBarcode from "jsbarcode";
-import QRCode from "qrcode";
 import type {
   AppSettings,
   AuditEntry,
@@ -815,25 +814,53 @@ export function BackupsPage({ user }: { user: SafeUser }) {
   );
 }
 
-function LabelBarcode({ code }: { code: string }) {
-  const ref = useRef<SVGSVGElement>(null);
+export function isValidEan13(code: string) {
+  if (!/^\d{13}$/.test(code)) return false;
+  const digits = [...code].map(Number);
+  const sum = digits.slice(0, 12).reduce(
+    (total, digit, index) => total + digit * (index % 2 === 0 ? 1 : 3),
+    0,
+  );
+  return (10 - (sum % 10)) % 10 === digits[12];
+}
+
+export const labelBarcodeFormat = (code: string): "EAN13" | "CODE128" =>
+  isValidEan13(code) ? "EAN13" : "CODE128";
+
+export function LabelBarcode({ code }: { code: string }) {
+  const ref = useRef<SVGSVGElement>(null),
+    [error, setError] = useState(false);
   useEffect(() => {
-    if (ref.current)
+    if (!ref.current) return;
+    try {
       JsBarcode(ref.current, code, {
-        format: "CODE128",
+        format: labelBarcodeFormat(code),
         displayValue: true,
-        height: 45,
-        margin: 2,
+        text: code,
+        width: 2,
+        height: 42,
+        margin: 8,
+        lineColor: "#000000",
+        background: "#ffffff",
       });
+      setError(false);
+    } catch {
+      ref.current.replaceChildren();
+      setError(true);
+    }
   }, [code]);
-  return <svg ref={ref} />;
+  return error ? (
+    <span className="label-barcode-error" role="alert">Le code-barres ne peut pas Ãªtre gÃ©nÃ©rÃ©.</span>
+  ) : <svg ref={ref} className="label-linear-barcode" role="img" aria-label={`Code-barres ${code}`} />;
 }
 export function ProductLabel() {
   const { id } = useParams(),
     [product, setProduct] = useState<ProductDetail>(),
     [settings, setSettings] = useState<AppSettings>(),
     [quantity, setQuantity] = useState(1),
-    [qr, setQr] = useState(""),
+    [format, setFormat] = useState<"thermal" | "a4">(() =>
+      window.localStorage.getItem("maktaba-label-format") === "a4" ? "a4" : "thermal",
+    ),
     [error, setError] = useState("");
   useEffect(() => {
     Promise.all([
@@ -843,7 +870,6 @@ export function ProductLabel() {
       .then(([p, s]) => {
         setProduct(p);
         setSettings(s);
-        QRCode.toDataURL(p.qrIdentifier, { width: 180, margin: 1 }).then(setQr);
       })
       .catch((e) => setError(errorText(e)));
   }, [id]);
@@ -851,7 +877,21 @@ export function ProductLabel() {
     <main className="page labels-page">
       <div className="title">
         <h1>Étiquette produit</h1>
-        <div>
+        <div className="inline-actions">
+          <select value={format} onChange={(e) => {
+            const next = e.target.value as "thermal" | "a4";
+            setFormat(next);
+            window.localStorage.setItem("maktaba-label-format", next);
+          }} aria-label="Format d'impression">
+            <option value="thermal">Étiquette thermique individuelle</option>
+            <option value="a4">Planche d'étiquettes A4</option>
+          </select>
+          <select value={[1, 6, 12, 24].includes(quantity) ? String(quantity) : "custom"} onChange={(e) => {
+            if (e.target.value !== "custom") setQuantity(Number(e.target.value));
+          }} aria-label="Quantité d'étiquettes">
+            {[1, 6, 12, 24].map((value) => <option key={value} value={value}>{value}</option>)}
+            <option value="custom">Personnalisée</option>
+          </select>
           <input
             type="number"
             min="1"
@@ -866,18 +906,14 @@ export function ProductLabel() {
       </div>
       <ErrorBox value={error} />
       {product && settings && (
-        <div className={`labels size-${settings.labelSize.replace("x", "-")}`}>
+        <div className={`labels label-format-${format} size-${settings.labelSize.replace("x", "-")}`}>
           {Array.from({ length: quantity }, (_, i) => (
             <article className="product-label" key={i}>
-              <strong>{settings.shopName}</strong>
+              <strong>{settings.shopName || "Librarie doubel"}</strong>
               <span>{product.name}</span>
-              <LabelBarcode code={product.internalBarcode} />
-              {settings.showQrOnLabel && qr && (
-                <img src={qr} alt={`QR ${product.qrIdentifier}`} />
-              )}{" "}
-              {settings.showPriceOnLabel && (
-                <b>{centsToMad(product.sellingPriceCents)}</b>
-              )}
+              <LabelBarcode code={product.manufacturerBarcode || product.internalBarcode} />
+              <code className="label-barcode-value">{product.manufacturerBarcode || product.internalBarcode}</code>
+              <b>{centsToMad(product.sellingPriceCents)}</b>
             </article>
           ))}
         </div>

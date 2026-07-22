@@ -14,6 +14,114 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{Manager, State};
+const DESKTOP_TOKEN_SERVICE: &str = "com.maktaba.pos";
+const DESKTOP_TOKEN_ACCOUNT: &str = "desktop-session";
+
+fn desktop_token_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(DESKTOP_TOKEN_SERVICE, DESKTOP_TOKEN_ACCOUNT)
+        .map_err(|_| "Stockage sécurisé indisponible.".to_string())
+}
+#[tauri::command]
+fn save_desktop_session_token(token: String) -> Result<(), String> {
+    if token.len() != 43
+        || !token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("Jeton de session invalide.".to_string());
+    }
+    desktop_token_entry()?
+        .set_password(&token)
+        .map_err(|_| "Enregistrement sécurisé impossible.".to_string())
+}
+#[tauri::command]
+fn load_desktop_session_token() -> Result<Option<String>, String> {
+    match desktop_token_entry()?.get_password() {
+        Ok(token) => Ok(Some(token)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err("Lecture du stockage sécurisé impossible.".to_string()),
+    }
+}
+#[tauri::command]
+fn delete_desktop_session_token() -> Result<(), String> {
+    match desktop_token_entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(_) => Err("Suppression de la session sécurisée impossible.".to_string()),
+    }
+}
+
+fn valid_offline_auth_snapshot(value: &Value) -> bool {
+    value["schemaVersion"].as_i64() == Some(1)
+        && value["shopKey"].as_str() == Some("single-shop")
+        && value["cachedAt"].as_str().is_some_and(|v| !v.is_empty())
+        && value["validUntil"].as_str().is_some_and(|v| !v.is_empty())
+        && value["user"]["id"].as_i64().is_some_and(|v| v > 0)
+        && value["user"]["username"]
+            .as_str()
+            .is_some_and(|v| !v.is_empty())
+        && value["user"]["fullName"]
+            .as_str()
+            .is_some_and(|v| !v.is_empty())
+        && value["user"]["role"]
+            .as_str()
+            .is_some_and(|v| !v.is_empty())
+        && value["user"]["permissions"]
+            .as_array()
+            .is_some_and(|permissions| {
+                permissions
+                    .iter()
+                    .all(|permission| permission.as_str().is_some())
+            })
+}
+
+#[tauri::command]
+fn save_offline_auth_snapshot(snapshot_json: String, db: State<Database>) -> Result<(), String> {
+    let snapshot: Value = serde_json::from_str(&snapshot_json)
+        .map_err(|_| "Profil hors ligne invalide".to_string())?;
+    if !valid_offline_auth_snapshot(&snapshot) {
+        return Err("Profil hors ligne invalide".into());
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    db.connect()?.execute(
+        "INSERT INTO offline_metadata(key,value_json,updated_at) VALUES('authenticated_user',?1,?2)
+         ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at",
+        params![snapshot.to_string(), now],
+    ).map_err(db_err)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn load_offline_auth_snapshot(db: State<Database>) -> Result<Option<Value>, String> {
+    let raw: Option<String> = db
+        .connect()?
+        .query_row(
+            "SELECT value_json FROM offline_metadata WHERE key='authenticated_user'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(db_err)?;
+    raw.map(|value| {
+        let snapshot: Value =
+            serde_json::from_str(&value).map_err(|_| "Profil hors ligne corrompu".to_string())?;
+        if !valid_offline_auth_snapshot(&snapshot) {
+            return Err("Profil hors ligne corrompu".into());
+        }
+        Ok(snapshot)
+    })
+    .transpose()
+}
+
+#[tauri::command]
+fn clear_offline_auth_snapshot(db: State<Database>) -> Result<(), String> {
+    db.connect()?
+        .execute(
+            "DELETE FROM offline_metadata WHERE key='authenticated_user'",
+            [],
+        )
+        .map_err(db_err)?;
+    Ok(())
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -728,6 +836,22 @@ fn queue_offline_sale(
     let _guard = db.guard()?;
     let mut c = db.connect()?;
     let tx = c.transaction().map_err(db_err)?;
+    let cached_profile: Option<String> = tx
+        .query_row(
+            "SELECT value_json FROM offline_metadata WHERE key='authenticated_user'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(db_err)?;
+    let cached_profile = cached_profile.ok_or_else(|| {
+        "Une connexion au serveur est requise pour enregistrer une vente hors ligne".to_string()
+    })?;
+    let cached_profile: Value = serde_json::from_str(&cached_profile)
+        .map_err(|_| "Profil hors ligne corrompu".to_string())?;
+    if cached_profile["user"]["id"].as_i64() != payload["userSnapshot"]["id"].as_i64() {
+        return Err("Cette file hors ligne appartient à un autre utilisateur".into());
+    }
     if let Some(reservation) = reservation_id {
         let serialized = payload["items"]
             .as_array()
@@ -1301,6 +1425,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_http::init())
         .manage(Session::default())
         .setup(|app| {
             let db = Database::new(app.handle())?;
@@ -1308,6 +1433,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            save_desktop_session_token,
+            load_desktop_session_token,
+            delete_desktop_session_token,
+            save_offline_auth_snapshot,
+            load_offline_auth_snapshot,
+            clear_offline_auth_snapshot,
             bootstrap,
             create_owner,
             login,
@@ -1386,5 +1517,17 @@ mod tests {
     fn permissions_are_role_based() {
         assert!(role_permissions("global_admin").contains(&"settings.manage".into()));
         assert!(!role_permissions("cashier").contains(&"settings.manage".into()))
+    }
+    #[test]
+    fn offline_auth_snapshot_contains_only_valid_public_identity_metadata() {
+        let valid = json!({
+            "schemaVersion": 1, "shopKey": "single-shop",
+            "cachedAt": "2026-07-22T08:00:00Z", "validUntil": "2026-07-22T20:00:00Z",
+            "user": { "id": 7, "username": "gerante", "fullName": "Gérante", "role": "manager", "permissions": ["pos.use"] }
+        });
+        assert!(valid_offline_auth_snapshot(&valid));
+        assert!(!valid_offline_auth_snapshot(
+            &json!({ "schemaVersion": 1, "token": "secret" })
+        ));
     }
 }

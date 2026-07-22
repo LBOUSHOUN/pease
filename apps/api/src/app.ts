@@ -4,7 +4,7 @@ import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import argon2 from "argon2";
-import { eq, or, sql as dsql } from "drizzle-orm";
+import { and, eq, isNull, or, sql as dsql } from "drizzle-orm";
 import {
   ownerSchema,
   loginSchema,
@@ -12,11 +12,12 @@ import {
 } from "@maktaba/validation";
 import { config } from "./config.js";
 import { db, sql } from "./db/index.js";
-import { appSettings, auditLogs, users } from "./db/schema.js";
+import { appSettings, auditLogs, sessions, users } from "./db/schema.js";
 import {
   authenticate,
   createSession,
   revoke,
+  isDesktopRequest,
   safeUser,
   requirePermission,
 } from "./auth.js";
@@ -165,8 +166,8 @@ export async function buildApp() {
           entityId: created!.id,
         });
       });
-      await createSession(created!.id, reply);
-      return reply.code(201).send({ user: safeUser(created!) });
+      const desktopSession = await createSession(created!.id, reply, isDesktopRequest(req));
+      return reply.code(201).send({ user: safeUser(created!), desktopSession });
     },
   );
   app.post("/api/auth/login", async (req, reply) => {
@@ -239,9 +240,9 @@ export async function buildApp() {
       .set({ lastLoginAt: new Date() })
       .where(eq(users.id, u.id));
 
-    await createSession(u.id, reply);
+    const desktopSession = await createSession(u.id, reply, isDesktopRequest(req));
 
-    return { user: safeUser(u) };
+    return { user: safeUser(u), desktopSession };
   });
   app.post("/api/auth/logout", async (req, reply) => {
     await revoke(req, reply);
@@ -285,13 +286,15 @@ export async function buildApp() {
           updatedAt: new Date(),
         })
         .where(eq(users.id, u.id));
+      await db.update(sessions).set({ revokedAt: new Date() }).where(and(eq(sessions.userId, u.id), isNull(sessions.revokedAt)));
+      const desktopSession = await createSession(u.id, reply, isDesktopRequest(req));
       await db.insert(auditLogs).values({
         userId: u.id,
         action: "password.changed",
         entityType: "user",
         entityId: u.id,
       });
-      return { user: safeUser(u) };
+      return { user: safeUser(u), desktopSession };
     },
   );
   app.get(

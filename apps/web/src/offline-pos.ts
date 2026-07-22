@@ -80,7 +80,7 @@ export async function checkConnection(timeoutMs = 3_500): Promise<ConnectionStat
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    await request<{ status: string }>("/health", { signal: controller.signal });
+    await request<{ status: string }>("/health", { signal: controller.signal, cache: "no-store", skipDesktopAuth: true });
     return "online";
   } catch (error) {
     if (error instanceof ApiFailure && error.status > 0) return "online";
@@ -226,6 +226,7 @@ async function transition(
 
 export async function syncPendingOfflineSales(
   requestFn: typeof request = request,
+  currentUserId?: number,
 ): Promise<void> {
   if (!isTauriRuntime()) return;
   if (syncInFlight) return syncInFlight;
@@ -233,6 +234,7 @@ export async function syncPendingOfflineSales(
     const records = await readQueueAsync();
     for (const record of records) {
       if (record.status !== "pending") continue;
+      if (currentUserId !== undefined && record.payload.userSnapshot.id !== currentUserId) continue;
       await transition(record, "syncing");
       try {
         const result = await requestFn<{ id: number }>("/sales", {

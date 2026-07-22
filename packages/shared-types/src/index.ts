@@ -153,6 +153,7 @@ export interface RegisterSummary {
   cashMovementCount: number;
   saleCount: number;
   cashSaleCount: number;
+  employeeCount?: number;
 }
 export interface RegisterStatus {
   isOpen: boolean;
@@ -279,6 +280,9 @@ export interface SaleItem {
   lineTotalCents: number;
 }
 export interface SaleDetail extends SaleListRow {
+  subtotalCents: number;
+  discountCents: number;
+  changeCents: number;
   registerSessionId: number | null;
   notes: string | null;
   items: SaleItem[];

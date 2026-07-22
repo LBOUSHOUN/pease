@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   Link,
   useLocation,
@@ -539,7 +539,7 @@ const initial: ProductFormState = {
   shelfLocation: "",
   trackStock: true,
 };
-export function ProductForm({ edit = false }: { edit?: boolean }) {
+export function ProductForm({ edit = false, user, offline = false }: { edit?: boolean; user: SafeUser; offline?: boolean }) {
   const { id } = useParams(),
     nav = useNavigate(),
     [searchParams, setSearchParams] = useSearchParams(),
@@ -550,8 +550,10 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
     })),
     [categories, setCategories] = useState<Category[]>([]),
     [busy, setBusy] = useState(false),
+    [generating, setGenerating] = useState(false),
     [error, setError] = useState(prefill.error),
-    [created, setCreated] = useState<ProductDetail>();
+    [created, setCreated] = useState<ProductDetail>(),
+    barcodeInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
     request<CategoryListResponse>(
       "/categories?pageSize=100&status=active",
@@ -587,6 +589,29 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
     k: K,
     v: ProductFormState[K],
   ) => setForm((x) => ({ ...x, [k]: v }));
+  const generateBarcode = async () => {
+    if (offline || !navigator.onLine || form.productType === "service" || generating) {
+      setError("La génération d’un code-barres nécessite une connexion au serveur.");
+      return;
+    }
+    try {
+      setGenerating(true);
+      setError("");
+      const result = await request<{ barcode: string }>("/products/barcodes/generate", {
+        method: "POST",
+      });
+      set("manufacturerBarcode", result.barcode);
+      barcodeInput.current?.focus();
+    } catch (e) {
+      setError(
+        navigator.onLine
+          ? e instanceof Error ? e.message : "Impossible de générer le code-barres."
+          : "La génération d’un code-barres nécessite une connexion au serveur.",
+      );
+    } finally {
+      setGenerating(false);
+    }
+  };
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (busy) return;
@@ -620,6 +645,7 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
         const product = await request<ProductDetail>("/products", { method: "POST", json: body });
         setCreated(product);
         setSearchParams({}, { replace: true });
+        nav(`/products/${product.id}`, { replace: true });
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erreur");
@@ -646,9 +672,11 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
             setForm({ ...initial });
           }}>Créer un autre produit</button>
           <button type="button" className="secondary" onClick={() => nav(`/products/${created.id}`)}>Voir le produit</button>
+          <button type="button" className="secondary" onClick={() => nav(`/products/${created.id}/label`)}>Imprimer l’étiquette</button>
         </section>
       )}
-      {!created && <form onSubmit={submit} className="grid-form">
+      {!created && <form onSubmit={submit} className="product-form grid-form">
+        <h2 className="form-section-title">Informations principales</h2>
         <label>
           Catégorie
           <select
@@ -719,15 +747,26 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
             onChange={(e) => set("sku", e.target.value)}
           />
         </label>
-        <label>
-          Code-barres fabricant
+        <h2 className="form-section-title">Code-barres</h2>
+        <label className="barcode-field form-section-card">
+          Code-barres
           <input
+            ref={barcodeInput}
             data-scanner-input="true"
             autoComplete="off"
             value={form.manufacturerBarcode}
             onChange={(e) => set("manufacturerBarcode", e.target.value)}
           />
+          <span className="inline-actions">
+            <button type="button" className="secondary" onClick={() => barcodeInput.current?.focus()}>Scanner</button>
+            <button type="button" className="secondary barcode-generate-action" disabled={generating || busy || offline || form.productType === "service"} onClick={generateBarcode}>{generating ? "Génération…" : "Générer"}</button>
+            {user.permissions.includes("labels.print") && <button type="button" className="secondary barcode-print-action" disabled={!edit || !id || !form.name.trim() || !form.manufacturerBarcode.trim()} onClick={() => id && nav(`/products/${id}/label`)}>Imprimer l’étiquette</button>}
+          </span>
+          {!edit && user.permissions.includes("labels.print") && <small>Enregistrez d’abord le produit pour imprimer l’étiquette.</small>}
+          {offline && <small className="field-error">La génération d’un code-barres nécessite une connexion au serveur.</small>}
+          <small>Scannez le code existant ou générez un code-barres interne.</small>
         </label>
+        <h2 className="form-section-title">Tarification</h2>
         <label>
           Prix d'achat MAD
           <input
@@ -745,7 +784,8 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
             required
           />
         </label>
-        {!edit && form.productType === "physical_product" && form.inventoryMode === "quantity" && (
+        <h2 className="form-section-title">Stock</h2>
+        {!edit && form.productType === "physical_product" && form.inventoryMode === "quantity" && form.trackStock && (
           <label>
             Quantité initiale
             <input
@@ -786,7 +826,7 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
                 onChange={(e) => set("minimumStock", e.target.value)}
               />
             </label>
-            <label>
+            <label className="stock-toggle">
               <input
                 type="checkbox"
                 checked={form.trackStock}
@@ -811,7 +851,7 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
             onChange={(e) => set("shelfLocation", e.target.value)}
           />
         </label>
-        <div className="actions">
+        <div className="actions product-form-actions">
           <button disabled={busy}>
             {busy ? "Enregistrement…" : "Enregistrer"}
           </button>
@@ -821,6 +861,9 @@ export function ProductForm({ edit = false }: { edit?: boolean }) {
             onClick={() => nav("/products")}
           >
             Annuler
+          </button>
+          <button className="product-save-action" disabled={busy || generating}>
+            {busy ? "Enregistrement…" : edit ? "Enregistrer les modifications" : "Enregistrer le produit"}
           </button>
         </div>
       </form>}

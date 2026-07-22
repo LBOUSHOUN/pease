@@ -1,12 +1,17 @@
 import type { ApiError, SafeUser } from "@maktaba/shared-types";
 import { isTauri } from "@tauri-apps/api/core";
+import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
+import { deleteDesktopSessionToken, desktopAuthorization, isNativeDesktop } from "./desktop-session";
+import { clearOfflineAuthSnapshot } from "./offline-auth";
+import { recordConnectionAttempt, type ConnectionErrorCategory } from "./connection-diagnostics";
 
-export type ApiRequest = Omit<RequestInit, "body"> & { json?: unknown };
+export type ApiRequest = Omit<RequestInit, "body"> & { json?: unknown; skipDesktopAuth?: boolean };
 export class ApiFailure extends Error {
   constructor(
     public data: ApiError,
     public status: number,
     public retryAfterSeconds?: number,
+    public category: ConnectionErrorCategory = status > 0 ? "http" : "network",
   ) {
     super(data.message);
     this.name = "ApiFailure";
@@ -84,32 +89,59 @@ export async function request<T>(
   path: string,
   options: ApiRequest = {},
 ): Promise<T> {
-  const { json, headers: suppliedHeaders, ...init } = options;
+  const { json, headers: suppliedHeaders, skipDesktopAuth, ...init } = options;
   const headers = new Headers(suppliedHeaders);
+  const native = isNativeDesktop();
+  if (native) {
+    headers.set("x-maktaba-client", "tauri-desktop");
+    const token = skipDesktopAuth ? null : await desktopAuthorization();
+    if (token) headers.set("authorization", `Bearer ${token}`);
+  }
   let body: string | undefined;
   if (json !== undefined) {
     headers.set("content-type", "application/json");
     body = JSON.stringify(json);
   }
+  let url: string;
+  try {
+    url = buildApiUrl(path);
+  } catch (error) {
+    recordConnectionAttempt({ category: "api_url", errorName: error instanceof Error ? error.name : "Error", message: error instanceof Error ? error.message : String(error), fetchAttempted: false });
+    throw error;
+  }
+  const base = url.slice(0, url.length - (path.startsWith("/") ? path.length : path.length + 1));
+  recordConnectionAttempt({ apiBaseUrl: base, healthUrl: buildApiUrl("/health"), transport: native ? "native" : "browser", fetchAttempted: true, category: "none", errorName: "—", message: "Requête démarrée" });
+  if (native) console.info("[desktop-network] request started", { origin: typeof window === "undefined" ? "indisponible" : window.location.origin, apiBaseUrl: base, transport: "native", path });
   let response: Response;
   try {
-    response = await fetch(buildApiUrl(path), {
+    const transport = native ? nativeFetch : fetch;
+    response = await transport(url, {
       ...init,
       headers,
       body,
-      credentials: "include",
+      ...(native ? {} : { credentials: "include" as const }),
     });
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError")
-      throw error;
+    const message = error instanceof Error ? error.message : String(error),
+      timeout = error instanceof DOMException && error.name === "AbortError",
+      category: ConnectionErrorCategory = timeout ? "timeout"
+        : native && /scope|permission|not allowed|denied/i.test(message) ? "csp_webview"
+          : native && /invoke|plugin|command/i.test(message) ? "tauri_command" : "network";
+    recordConnectionAttempt({ category, errorName: error instanceof Error ? error.name : "Error", message, fetchAttempted: true });
+    if (native) console.warn("[desktop-network] request failed", { path, category, errorName: error instanceof Error ? error.name : "Error" });
+    if (timeout) throw error;
     throw new ApiFailure(
       {
-        code: "NETWORK_ERROR",
-        message: "Impossible de joindre le serveur. Vérifiez votre connexion.",
+        code: timeout ? "TIMEOUT" : "NETWORK_ERROR",
+        message: timeout ? "Le délai de connexion à l’API est dépassé." : "Impossible de joindre le serveur. Vérifiez votre connexion.",
       },
       0,
+      undefined,
+      category,
     );
   }
+  recordConnectionAttempt({ category: response.ok ? "none" : "http", httpStatus: response.status, errorName: response.ok ? "—" : "HTTPError", message: response.ok ? "Requête réussie" : `Réponse HTTP ${response.status}` });
+  if (native) console.info("[desktop-network] request completed", { path, status: response.status });
   const text = await response.text();
   let parsed: unknown;
   if (text) {
@@ -131,11 +163,16 @@ export async function request<T>(
       response.status === 401 &&
       failure.data.code !== "BAD_CREDENTIALS" &&
       typeof window !== "undefined"
-    )
+    ) {
+      if (native) {
+        await clearOfflineAuthSnapshot().catch(() => undefined);
+        await deleteDesktopSessionToken();
+      }
       window.dispatchEvent(new Event("session-expired"));
+    }
     throw failure;
   }
   return parsed as T;
 }
 
-export type AuthResponse = { user: SafeUser };
+export type AuthResponse = { user: SafeUser; desktopSession?: { token: string; expiresAt: string } };

@@ -101,6 +101,16 @@ describe("offline POS desktop boundary", () => {
     );
   });
 
+  it("does not synchronize another user's pending financial operations", async () => {
+    bridge.invoke.mockImplementation((command: string) =>
+      command === "list_offline_queue" ? Promise.resolve([record]) : Promise.resolve(),
+    );
+    const send = vi.fn();
+    await syncPendingOfflineSales(send as never, record.payload.userSnapshot.id + 1);
+    expect(send).not.toHaveBeenCalled();
+    expect(bridge.invoke).toHaveBeenCalledTimes(1);
+  });
+
   it.each([400, 403, 404, 409])("rejects an HTTP %s conflict", async (status) => {
     bridge.invoke.mockImplementation((command: string) =>
       command === "list_offline_queue" ? Promise.resolve([record]) : Promise.resolve(),

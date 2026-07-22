@@ -23,6 +23,9 @@ describe("API client", () => {
       }),
     ).toBe("https://api.example.com/api");
   });
+  it("builds the exact installed desktop health URL", () => {
+    expect(buildApiUrl("/health", { env: { VITE_API_URL: "http://127.0.0.1:3000/api" } })).toBe("http://127.0.0.1:3000/api/health");
+  });
   it("sends empty logout without JSON body or content type", async () => {
     const fetch = vi
       .fn()
@@ -33,6 +36,8 @@ describe("API client", () => {
     expect(init.body).toBeUndefined();
     expect(new Headers(init.headers).has("content-type")).toBe(false);
     expect(init.credentials).toBe("include");
+    expect(new Headers(init.headers).has("authorization")).toBe(false);
+    expect(new Headers(init.headers).has("x-maktaba-client")).toBe(false);
   });
   it("serializes JSON only when provided", async () => {
     const fetch = vi.fn().mockResolvedValue(

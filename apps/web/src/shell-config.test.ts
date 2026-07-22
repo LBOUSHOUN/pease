@@ -6,6 +6,13 @@ const root = resolve(process.cwd(), "../..");
 const read = (path: string) => readFileSync(resolve(root, path), "utf8");
 
 describe("desktop development launcher", () => {
+  it("restricts native HTTP to the exact local API and embeds its production base URL", () => {
+    const capability = JSON.parse(read("apps/desktop/src-tauri/capabilities/default.json"));
+    const http = capability.permissions.find((entry: unknown) => typeof entry === "object" && entry !== null && (entry as { identifier?: string }).identifier === "http:default");
+    expect(http.allow).toEqual([{ url: "http://127.0.0.1:3000/**" }]);
+    expect(JSON.stringify(http)).not.toContain("http://*");
+    expect(read("apps/web/.env.production").trim()).toBe("VITE_API_URL=http://127.0.0.1:3000/api");
+  });
   it("uses one strict canonical Vite URL across root, Vite and Tauri", () => {
     const rootPackage = JSON.parse(read("package.json"));
     const vite = read("apps/web/vite.config.ts");

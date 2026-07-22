@@ -969,8 +969,8 @@ export function PosPage({ user }: { user: SafeUser }) {
   }, [connectionState, cq]);
   useEffect(() => {
     if (connectionState !== "online") return;
-    void syncPendingOfflineSales().finally(() => void getOfflineQueueSummary().then(setQueueSummary));
-  }, [connectionState]);
+    void syncPendingOfflineSales(request, user.id).finally(() => void getOfflineQueueSummary().then(setQueueSummary));
+  }, [connectionState, user.id]);
   const add = useCallback((product: ProductListRow) => {
     if (product.inventoryMode === "serialized") {
       setScannerState("Code unitaire requis");
@@ -1430,6 +1430,10 @@ export function SalesPage() {
 export function SaleDetails() {
   const { id } = useParams(),
     [sale, setSale] = useState<SaleDetail>(),
+    [format, setFormat] = useState<"thermal" | "a4">(() =>
+      window.localStorage.getItem("maktaba-receipt-format") === "a4" ? "a4" : "thermal",
+    ),
+    [logoFailed, setLogoFailed] = useState(false),
     [error, setError] = useState("");
   useEffect(() => {
     const c = new AbortController();
@@ -1439,22 +1443,41 @@ export function SaleDetails() {
     return () => c.abort();
   }, [id]);
   return (
-    <main className="page print-sheet">
+    <main className={`page print-sheet receipt-format-${format}`}>
       <ErrorBox value={error} />
       {sale && (
         <>
           <div className="title">
             <h1>Reçu {sale.saleNumber}</h1>
-            <button onClick={() => window.print()}>Imprimer</button>
+            <div className="inline-actions">
+              <select aria-label="Format du reçu" value={format} onChange={(event) => {
+                const next = event.target.value as "thermal" | "a4";
+                setFormat(next);
+                window.localStorage.setItem("maktaba-receipt-format", next);
+              }}>
+                <option value="thermal">Ticket thermique 80 mm</option>
+                <option value="a4">Document A4</option>
+              </select>
+              <button onClick={() => window.print()}>Imprimer le reçu</button>
+            </div>
           </div>
+          <section className="receipt-document">
           <div className="receipt-head">
-            <b>{sale.shopName}</b>
+            {!logoFailed && <img className="receipt-logo" src="/branding/logo-doubel.png" alt="Librarie doubel" onError={() => setLogoFailed(true)} />}
+            <b>{sale.shopName || "Librarie doubel"}</b>
             <span>{sale.shopAddress}</span>
-            <span>{sale.shopPhone}</span>
+            <span>Téléphone : {sale.shopPhone || "0713010739"}</span>
+            <strong>TICKET DE CAISSE</strong>
             <span>{new Date(sale.createdAt).toLocaleString("fr-MA")}</span>
             <span>Caissier : {sale.workerName}</span>
             <span>Client : {sale.customerName || "Comptoir"}</span>
           </div>
+          <dl className="receipt-meta">
+            <dt>N° Ticket</dt><dd>{sale.saleNumber}</dd>
+            <dt>Client</dt><dd>{sale.customerName || "Client comptoir"}</dd>
+            <dt>Vendeur</dt><dd>{sale.workerName}</dd>
+            <dt>Mode de paiement</dt><dd>{{ cash: "Espèces", credit: "Crédit client", partial: "Espèces + Crédit" }[sale.paymentMode]}</dd>
+          </dl>
           <div className="table">
             <table>
               <thead>
@@ -1478,6 +1501,8 @@ export function SaleDetails() {
             </table>
           </div>
           <dl className="details">
+            <dt>Sous-total</dt><dd>{centsToMad(sale.subtotalCents)}</dd>
+            {sale.discountCents > 0 && <><dt>Remise</dt><dd>- {centsToMad(sale.discountCents)}</dd></>}
             <dt>Total</dt>
             <dd>
               <b>{centsToMad(sale.totalCents)}</b>
@@ -1488,15 +1513,18 @@ export function SaleDetails() {
             <dd>{centsToMad(sale.creditAmountCents)}</dd>
             <dt>Mode</dt>
             <dd>{sale.paymentMode}</dd>
+            {sale.changeCents > 0 && <><dt>Monnaie rendue</dt><dd>{centsToMad(sale.changeCents)}</dd></>}
+            <dt className="receipt-grand-total">TOTAL À PAYER</dt><dd className="receipt-grand-total">{centsToMad(sale.totalCents)}</dd>
           </dl>
-          <p>{sale.receiptFooter}</p>
+          <footer className="receipt-footer"><p>Merci de votre visite !</p><p>{sale.receiptFooter || "Merci pour votre confiance"}</p></footer>
+          </section>
         </>
       )}
     </main>
   );
 }
 
-export function OfflineQueuePage() {
+export function OfflineQueuePage({ user }: { user: SafeUser }) {
   const [queueSummary, setQueueSummary] = useState<OfflineQueueSummary>({ pendingCount: 0, syncingCount: 0, syncedCount: 0, rejectedCount: 0 }),
     [records, setRecords] = useState<OfflineSaleRecord[]>([]),
     [syncing, setSyncing] = useState(false),
@@ -1531,7 +1559,7 @@ export function OfflineQueuePage() {
   const handleSync = async () => {
     setSyncing(true);
     try {
-      await syncPendingOfflineSales();
+      await syncPendingOfflineSales(request, user.id);
       await refreshQueue();
     } catch (error) {
       console.error("Sync failed:", error);

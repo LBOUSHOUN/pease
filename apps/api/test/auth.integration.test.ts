@@ -223,7 +223,54 @@ describe("online authentication", () => {
       });
       expect(r.statusCode).toBe(200);
       expect(r.headers["set-cookie"]).toContain("HttpOnly");
+      expect(r.json().desktopSession).toBeUndefined();
     }
+  });
+  it("issues only a hashed, revocable desktop bearer session", async () => {
+    await owner();
+    const login = await app.inject({
+      method: "POST", url: "/api/auth/login",
+      headers: { origin: "http://tauri.localhost", "x-maktaba-client": "tauri-desktop" },
+      payload: { login: "owner", password: "Secret123" },
+    });
+    expect(login.statusCode).toBe(200);
+    const token = login.json().desktopSession.token as string;
+    expect(token).toHaveLength(43);
+    const [stored] = await database.sql`select token_hash,session_type,expires_at from sessions where session_type='desktop'`;
+    expect(stored!.token_hash).not.toBe(token);
+    expect(new Date(String(stored!.expires_at)).getTime()).toBeGreaterThan(Date.now());
+    expect((await app.inject({ url: "/api/auth/me", headers: { authorization: `Bearer ${token}` } })).statusCode).toBe(200);
+    expect((await app.inject({ url: "/api/auth/me", headers: { authorization: "Bearer invalid" } })).statusCode).toBe(401);
+    await database.sql`update sessions set expires_at=now()-interval '1 minute' where session_type='desktop'`;
+    const expired = await app.inject({ url: "/api/auth/me", headers: { authorization: `Bearer ${token}` } });
+    expect(expired.statusCode).toBe(401);
+    expect(expired.json().code).toBe("SESSION_EXPIRED");
+
+    const second = await app.inject({
+      method: "POST", url: "/api/auth/login",
+      headers: { origin: "http://tauri.localhost", "x-maktaba-client": "tauri-desktop" },
+      payload: { login: "owner", password: "Secret123" },
+    });
+    const secondToken = second.json().desktopSession.token as string;
+    expect((await app.inject({ method: "POST", url: "/api/auth/logout", headers: { authorization: `Bearer ${secondToken}` } })).statusCode).toBe(200);
+    expect((await app.inject({ url: "/api/auth/me", headers: { authorization: `Bearer ${secondToken}` } })).statusCode).toBe(401);
+
+    const third = await app.inject({
+      method: "POST", url: "/api/auth/login",
+      headers: { origin: "http://tauri.localhost", "x-maktaba-client": "tauri-desktop" },
+      payload: { login: "owner", password: "Secret123" },
+    });
+    const oldToken = third.json().desktopSession.token as string;
+    const changed = await app.inject({
+      method: "POST", url: "/api/auth/change-password",
+      headers: { origin: "http://tauri.localhost", "x-maktaba-client": "tauri-desktop", authorization: `Bearer ${oldToken}` },
+      payload: { currentPassword: "Secret123", newPassword: "NouveauSecret456" },
+    });
+    expect(changed.statusCode).toBe(200);
+    const replacement = changed.json().desktopSession.token as string;
+    expect(replacement).not.toBe(oldToken);
+    expect((await app.inject({ url: "/api/auth/me", headers: { authorization: `Bearer ${oldToken}` } })).json().code).toBe("SESSION_REVOKED");
+    expect((await app.inject({ url: "/api/auth/me", headers: { authorization: `Bearer ${replacement}` } })).statusCode).toBe(200);
   });
   it("returns 401 for wrong and unknown credentials", async () => {
     await owner();
@@ -387,8 +434,8 @@ describe("online catalog and stock", () => {
       payload: productBody(cat.id),
     });
     expect(first.statusCode).toBe(201);
-    expect(first.json().internalBarcode).toBe("MKT-000001");
-    expect(first.json().qrIdentifier).toBe("MKT-P-MKT-000001");
+    expect(first.json().internalBarcode).toBe("MKT000000001");
+    expect(first.json().qrIdentifier).toBe("MKT-P-MKT000000001");
     const service = await app.inject({
       method: "POST",
       url: "/api/products",
@@ -463,12 +510,26 @@ describe("online catalog and stock", () => {
     const codes = responses.map((r) => r.json().internalBarcode);
     expect(new Set(codes).size).toBe(5);
     expect(codes.sort()).toEqual([
-      "MKT-000001",
-      "MKT-000002",
-      "MKT-000003",
-      "MKT-000004",
-      "MKT-000005",
+      "MKT000000001",
+      "MKT000000002",
+      "MKT000000003",
+      "MKT000000004",
+      "MKT000000005",
     ]);
+  });
+  it("reserves unique internal barcodes through the protected generator", async () => {
+    const session = await phase2Owner();
+    const responses = await Promise.all(
+      Array.from({ length: 5 }, () => app.inject({
+        method: "POST",
+        url: "/api/products/barcodes/generate",
+        headers: { cookie: session },
+      })),
+    );
+    expect(responses.every((response) => response.statusCode === 201)).toBe(true);
+    const codes = responses.map((response) => response.json().barcode);
+    expect(new Set(codes).size).toBe(5);
+    expect(codes.every((code) => /^MKT\d{9}$/.test(code))).toBe(true);
   });
   it("rejects duplicate identifiers, negative prices, and inactive categories", async () => {
     const session = await phase2Owner(),
@@ -1613,7 +1674,13 @@ describe("online administration, reports, exports and settings", () => {
       });
     expect(login.statusCode).toBe(200);
     expect(login.json().user.mustChangePassword).toBe(true);
-    const workerCookie = cookie(login),
+    const desktopLogin = await app.inject({
+      method: "POST", url: "/api/auth/login",
+      headers: { origin: "http://tauri.localhost", "x-maktaba-client": "tauri-desktop" },
+      payload: { login: "cashier5", password: "1" },
+    });
+    const desktopToken = desktopLogin.json().desktopSession.token as string,
+      workerCookie = cookie(login),
       blocked = await app.inject({
         url: "/api/products",
         headers: { cookie: workerCookie },
@@ -1634,18 +1701,20 @@ describe("online administration, reports, exports and settings", () => {
         })
       ).statusCode,
     ).toBe(401);
-    expect(
-      (
-        await app.inject({
+    expect((await app.inject({ url: "/api/auth/me", headers: { authorization: `Bearer ${desktopToken}` } })).json().code).toBe("SESSION_REVOKED");
+    const relogin = await app.inject({
           method: "POST",
           url: "/api/auth/login",
+          headers: { origin: "http://tauri.localhost", "x-maktaba-client": "tauri-desktop" },
           payload: {
             login: "cashier5",
             password: "0",
           },
-        })
-      ).statusCode,
-    ).toBe(200);
+        });
+    expect(relogin.statusCode).toBe(200);
+    const replacementToken = relogin.json().desktopSession.token as string;
+    expect((await app.inject({ method: "POST", url: `/api/users/${id}/deactivate`, headers: { cookie: admin } })).statusCode).toBe(200);
+    expect((await app.inject({ url: "/api/auth/me", headers: { authorization: `Bearer ${replacementToken}` } })).json().code).toBe("SESSION_REVOKED");
     const audit = await app.inject({
       url: "/api/audit-logs?action=user.password_reset",
       headers: { cookie: admin },

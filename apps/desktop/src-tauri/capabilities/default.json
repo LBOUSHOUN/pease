@@ -6,6 +6,10 @@
   "permissions": [
     "core:default",
     "opener:default",
-    "dialog:default"
+    "dialog:default",
+    {
+      "identifier": "http:default",
+      "allow": [{ "url": "http://127.0.0.1:3000/**" }]
+    }
   ]
 }

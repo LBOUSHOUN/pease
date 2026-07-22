@@ -43,6 +43,7 @@ const summary = (row?: Row) => ({
   cashMovementCount: Number(row?.cash_movement_count ?? 0),
   saleCount: Number(row?.sale_count ?? 0),
   cashSaleCount: Number(row?.cash_sale_count ?? 0),
+  employeeCount: Number(row?.employee_count ?? 0),
 });
 const expectedQuery = (tx: typeof sql, id: number) => tx<Row[]>`
   select r.opening_amount_cents,
@@ -51,7 +52,11 @@ const expectedQuery = (tx: typeof sql, id: number) => tx<Row[]>`
     coalesce(sum(m.amount_cents) filter(where m.movement_type='customer_debt_payment'),0)::bigint debt_payments_cents,
     count(m.id)::int cash_movement_count,
     (select count(*)::int from sales where cash_register_session_id=r.id) sale_count,
-    (select count(*)::int from sales where cash_register_session_id=r.id and cash_paid_cents>0) cash_sale_count
+    (select count(*)::int from sales where cash_register_session_id=r.id and cash_paid_cents>0) cash_sale_count,
+    (select count(distinct actor_id)::int from (
+      select cashier_id actor_id from sales where cash_register_session_id=r.id
+      union all select created_by from cash_movements where cash_register_session_id=r.id
+    ) actors) employee_count
   from cash_register_sessions r left join cash_movements m on m.cash_register_session_id=r.id
   where r.id=${id} group by r.id`;
 
@@ -59,10 +64,10 @@ export async function registerPhase3(app: FastifyInstance) {
   app.get(
     "/api/register/status",
     { preHandler: requirePermission("register.view") },
-    async (req) => {
+    async () => {
       const rows = await sql<
         Row[]
-      >`select r.*,u.full_name cashier_name from cash_register_sessions r join users u on u.id=r.cashier_id where r.cashier_id=${req.user!.id} and r.status='open' limit 1`;
+      >`select r.*,u.full_name cashier_name from cash_register_sessions r join users u on u.id=r.cashier_id where r.status='open' limit 1`;
       if (!rows[0])
         return {
           isOpen: false,
@@ -77,7 +82,7 @@ export async function registerPhase3(app: FastifyInstance) {
       return {
         isOpen: true,
         sessionId: Number(rows[0].id),
-        cashierId: req.user!.id,
+        cashierId: Number(rows[0].cashier_id),
         cashierName: rows[0].cashier_name,
         openedAt: rows[0].opened_at,
         openingCashCents: opening,
@@ -115,10 +120,10 @@ export async function registerPhase3(app: FastifyInstance) {
               openedAt: prior[0].opened_at,
               duplicate: true,
             };
-          await tx`select pg_advisory_xact_lock(${req.user!.id},31001)`;
+          await tx`select pg_advisory_xact_lock(31001)`;
           const open = await tx<
             Row[]
-          >`select id from cash_register_sessions where cashier_id=${req.user!.id} and status='open' for update`;
+          >`select id from cash_register_sessions where status='open' for update`;
           if (open.length)
             throw Object.assign(new Error("OPEN_REGISTER"), {
               statusCode: 409,
@@ -166,7 +171,7 @@ export async function registerPhase3(app: FastifyInstance) {
       return sql.begin(async (tx) => {
         const duplicate = await tx<
           Row[]
-        >`select id,expected_closing_cents,actual_closing_cents,difference_cents from cash_register_sessions where cashier_id=${req.user!.id} and closing_idempotency_key=${x.idempotencyKey}`;
+        >`select id,expected_closing_cents,actual_closing_cents,difference_cents from cash_register_sessions where closing_idempotency_key=${x.idempotencyKey}`;
         if (duplicate[0])
           return {
             id: Number(duplicate[0].id),
@@ -177,7 +182,7 @@ export async function registerPhase3(app: FastifyInstance) {
           };
         const rows = await tx<
           Row[]
-        >`select * from cash_register_sessions where cashier_id=${req.user!.id} and status='open' for update`;
+        >`select * from cash_register_sessions where status='open' for update`;
         if (!rows[0]) return bad(reply, "Aucune caisse ouverte.", 409);
         const [totals] = await expectedQuery(
           tx as unknown as typeof sql,
@@ -194,7 +199,7 @@ export async function registerPhase3(app: FastifyInstance) {
             await tx`insert into cash_register_denominations(cash_register_session_id,denomination_cents,quantity,total_cents,phase) values(${rows[0].id},${line.denominationCents},${line.quantity},${line.denominationCents * line.quantity},'closing')`;
         const [closed] = await tx<
           Row[]
-        >`update cash_register_sessions set status='closed',closed_at=now(),expected_closing_cents=${expected},actual_closing_cents=${actual},difference_cents=${difference},difference_reason=${x.differenceReason ?? null},closing_note=${x.note ?? null},closing_idempotency_key=${x.idempotencyKey},updated_at=now() where id=${rows[0].id} and status='open' returning id,closed_at`;
+        >`update cash_register_sessions set status='closed',closed_at=now(),closed_by=${req.user!.id},expected_closing_cents=${expected},actual_closing_cents=${actual},difference_cents=${difference},difference_reason=${x.differenceReason ?? null},closing_note=${x.note ?? null},closing_idempotency_key=${x.idempotencyKey},updated_at=now() where id=${rows[0].id} and status='open' returning id,closed_at`;
         if (!closed) return bad(reply, "La caisse vient d’être clôturée.", 409);
         await tx`insert into cash_movements(cash_register_session_id,movement_type,amount_cents,reason,created_by) values(${closed.id},'register_closing',${actual},${x.note ?? "Clôture de caisse"},${req.user!.id})`;
         await tx`insert into audit_logs(user_id,action,entity_type,entity_id,new_values_json) values(${req.user!.id},'register.closed','cash_register',${closed.id},${JSON.stringify({ expected, actual, difference })})`;
@@ -217,11 +222,10 @@ export async function registerPhase3(app: FastifyInstance) {
       const p = registerListFiltersSchema.safeParse(req.query);
       if (!p.success) return bad(reply, "Filtres invalides.");
       const x = p.data,
-        offset = (x.page - 1) * x.pageSize,
-        role = req.user!.role;
+        offset = (x.page - 1) * x.pageSize;
       const rows = await sql<
         Row[]
-      >`select r.*,u.full_name cashier_name,count(*) over() total_count from cash_register_sessions r join users u on u.id=r.cashier_id where (${role} in ('global_admin','manager') or r.cashier_id=${req.user!.id}) and (${x.status}='all' or r.status=${x.status}) order by r.opened_at desc limit ${x.pageSize} offset ${offset}`;
+      >`select r.*,u.full_name cashier_name,count(*) over() total_count from cash_register_sessions r join users u on u.id=r.cashier_id where (${x.status}='all' or r.status=${x.status}) order by r.opened_at desc limit ${x.pageSize} offset ${offset}`;
       return {
         ...pages(Number(rows[0]?.total_count ?? 0), x.page, x.pageSize),
         rows: rows.map(registerRow),
@@ -236,7 +240,7 @@ export async function registerPhase3(app: FastifyInstance) {
       if (!p.success) return bad(reply, "Identifiant invalide.");
       const rows = await sql<
         Row[]
-      >`select r.*,u.full_name cashier_name from cash_register_sessions r join users u on u.id=r.cashier_id where r.id=${p.data.id} and (${req.user!.role} in ('global_admin','manager') or r.cashier_id=${req.user!.id})`;
+      >`select r.*,u.full_name cashier_name from cash_register_sessions r join users u on u.id=r.cashier_id where r.id=${p.data.id}`;
       if (!rows[0]) return bad(reply, "Session de caisse introuvable.", 404);
       const den = await sql<
         Row[]
@@ -264,7 +268,7 @@ export async function registerPhase3(app: FastifyInstance) {
         offset = (x.page - 1) * x.pageSize;
       const rows = await sql<
         Row[]
-      >`select m.*,u.full_name worker_name,r.cashier_id,count(*) over() total_count from cash_movements m join users u on u.id=m.created_by join cash_register_sessions r on r.id=m.cash_register_session_id where (${req.user!.role} in ('global_admin','manager') or r.cashier_id=${req.user!.id}) and (${x.sessionId ?? null}::int is null or m.cash_register_session_id=${x.sessionId ?? null}) and (${x.movementType ?? null}::text is null or m.movement_type=${x.movementType ?? null}) and (${x.startDate ?? null}::date is null or m.created_at>=${x.startDate ?? null}::date) and (${x.endDate ?? null}::date is null or m.created_at<(${x.endDate ?? null}::date+1)) order by m.created_at desc limit ${x.pageSize} offset ${offset}`;
+      >`select m.*,u.full_name worker_name,r.cashier_id,count(*) over() total_count from cash_movements m join users u on u.id=m.created_by join cash_register_sessions r on r.id=m.cash_register_session_id where (${x.sessionId ?? null}::int is null or m.cash_register_session_id=${x.sessionId ?? null}) and (${x.movementType ?? null}::text is null or m.movement_type=${x.movementType ?? null}) and (${x.startDate ?? null}::date is null or m.created_at>=${x.startDate ?? null}::date) and (${x.endDate ?? null}::date is null or m.created_at<(${x.endDate ?? null}::date+1)) order by m.created_at desc limit ${x.pageSize} offset ${offset}`;
       return {
         ...pages(Number(rows[0]?.total_count ?? 0), x.page, x.pageSize),
         rows: rows.map(movementRow),
@@ -404,7 +408,7 @@ export async function registerPhase3(app: FastifyInstance) {
             };
           const [reg] = await tx<
             Row[]
-          >`select id from cash_register_sessions where cashier_id=${req.user!.id} and status='open' for update`;
+          >`select id from cash_register_sessions where status='open' for update`;
           if (!reg) throw new Error("NO_REGISTER");
           const [customer] = await tx<
             Row[]
@@ -531,7 +535,7 @@ export async function registerPhase3(app: FastifyInstance) {
           if (cash > 0) {
             [reg] = await tx<
               Row[]
-            >`select * from cash_register_sessions where cashier_id=${req.user!.id} and status='open' for update`;
+            >`select * from cash_register_sessions where status='open' for update`;
             if (!reg) throw new Error("NO_REGISTER");
           }
           let customer: Row | undefined,
@@ -676,6 +680,9 @@ export async function registerPhase3(app: FastifyInstance) {
         >`select t.*,u.full_name worker_name from customer_credit_transactions t join users u on u.id=t.created_by where t.sale_id=${p.data.id}`;
       return {
         ...saleRow(row),
+        subtotalCents: Number(row.subtotal_cents),
+        discountCents: Number(row.discount_cents),
+        changeCents: Number(row.change_cents),
         registerSessionId: row.cash_register_session_id
           ? Number(row.cash_register_session_id)
           : null,
