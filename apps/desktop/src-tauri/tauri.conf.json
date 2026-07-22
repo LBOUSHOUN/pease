@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "node -e \"process.exit(0)\"",
     "devUrl": "http://127.0.0.1:5173",
-    "beforeBuildCommand": "npm --prefix ../../ run build --workspace=@maktaba/web && npm --prefix ../../ run build --workspace=@maktaba/api",
+    "beforeBuildCommand": "npm --prefix ../../ run build --workspace=@maktaba/web",
     "frontendDist": "../../web/dist"
   },
   "app": {
@@ -20,12 +20,14 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:3000 http://127.0.0.1:5173 ws://127.0.0.1:5173; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+      "csp": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:3000 http://127.0.0.1:5173 ws://127.0.0.1:5173 https://pease-production.up.railway.app; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

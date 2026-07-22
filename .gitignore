@@ -6,8 +6,11 @@ dist/
 !deploy/.env.production.example
 *.log
 *.dump
+*.backup
 *.sql.gz
 backups/
+.backups-test/
+backup-temp/
 coverage/
 .vite/
 apps/desktop/src-tauri/target/
