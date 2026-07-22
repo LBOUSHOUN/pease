@@ -35,7 +35,7 @@ const postgresEnvironment = (databaseUrl: string) => {
 export async function runBackup() {
   if (process.env.BACKUP_ENABLED === "false") return log("info", "backup_disabled");
   const started = Date.now(), databaseUrl = required("DATABASE_URL"), supabaseUrl = required("SUPABASE_URL"),
-    serviceKey = required("SUPABASE_SERVICE_ROLE_KEY"), bucket = process.env.SUPABASE_BACKUP_BUCKET || "maktaba-backups",
+    serviceKey = required("SUPABASE_SERVICE_ROLE_KEY"), bucket = process.env.SUPABASE_BACKUP_BUCKET || "double-backups",
     pgDump = process.env.PG_DUMP_PATH || "pg_dump", sourceLabel = process.env.BACKUP_SOURCE_LABEL || "railway-production";
   const pgRestore = process.env.PG_RESTORE_PATH || "pg_restore";
   const version = (await command(pgDump, ["--version"])).stdout.trim();
@@ -51,7 +51,7 @@ export async function runBackup() {
     const storage = new SupabaseBackupStorage(supabaseUrl, serviceKey, bucket);
     await storage.assertPrivateBucket();
     const now = new Date(), filename = backupFilename(now), tempRoot = process.env.BACKUP_TEMP_DIRECTORY || tmpdir();
-    directory = await mkdtemp(join(tempRoot, "maktaba-backup-"));
+    directory = await mkdtemp(join(tempRoot, "double-library-backup-"));
     const dumpFile = join(directory, filename);
     await command(pgDump, ["--format=custom", "--compress=gzip:6", "--no-owner", "--no-acl", "--file", dumpFile], postgresEnvironment(databaseUrl));
     const info = await stat(dumpFile);
@@ -105,7 +105,7 @@ export async function verifyRowCounts() {
 }
 
 export async function runRetentionOnly() {
-  const storage = new SupabaseBackupStorage(required("SUPABASE_URL"), required("SUPABASE_SERVICE_ROLE_KEY"), process.env.SUPABASE_BACKUP_BUCKET || "maktaba-backups");
+  const storage = new SupabaseBackupStorage(required("SUPABASE_URL"), required("SUPABASE_SERVICE_ROLE_KEY"), process.env.SUPABASE_BACKUP_BUCKET || "double-backups");
   await storage.assertPrivateBucket();
   for (const [category, keep] of Object.entries({ daily: Number(process.env.BACKUP_RETENTION_DAILY ?? 7), weekly: Number(process.env.BACKUP_RETENTION_WEEKLY ?? 4), monthly: Number(process.env.BACKUP_RETENTION_MONTHLY ?? 6) }) as [BackupCategory, number][]) {
     await storage.remove(retentionDeletes(await storage.listRecursive(category), category, keep));

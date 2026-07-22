@@ -2,7 +2,7 @@
 
 ## Architecture et limites
 
-Railway PostgreSQL reste l’unique base active de Maktaba POS. L’API conserve impérativement `DATABASE_URL=${{Postgres.DATABASE_URL}}`. Le service cron Railway séparé exécute `pg_dump` 18, vérifie le dump avec `pg_restore --list`, calcule son SHA256 puis l’envoie dans le bucket Supabase Storage privé `maktaba-backups`. Supabase Database n’est ni la base active ni la destination d’une restauration quotidienne.
+Railway PostgreSQL reste l’unique base active de Double Library POS. L’API conserve impérativement `DATABASE_URL=${{Postgres.DATABASE_URL}}`. Le service cron Railway séparé exécute `pg_dump` 18, vérifie le dump avec `pg_restore --list`, calcule son SHA256 puis l’envoie dans le bucket Supabase Storage privé `double-backups`. Supabase Database n’est ni la base active ni la destination d’une restauration quotidienne.
 
 Le worker utilise un verrou consultatif PostgreSQL : une seconde exécution quitte sans créer de doublon. Tous les jours, il crée une version `daily`; le dimanche UTC une copie `weekly`; la première sauvegarde réussie du mois crée une copie `monthly`. Après confirmation des objets `.dump` et `.json`, il conserve respectivement les 7, 4 et 6 plus récents.
 
@@ -16,10 +16,12 @@ Variables obligatoires du worker :
 DATABASE_URL=${{Postgres.DATABASE_URL}}
 SUPABASE_URL=https://PROJECT_REF.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<secret Railway uniquement>
-SUPABASE_BACKUP_BUCKET=maktaba-backups
+SUPABASE_BACKUP_BUCKET=double-backups
 ```
 
-Le bucket doit être créé dans Supabase Dashboard → Storage → New bucket, sous le nom exact `maktaba-backups`, avec **Public bucket désactivé**. Le worker vérifie ce réglage et échoue si le bucket manque ou est public. Ne créer aucune politique anonyme d’upload ou de lecture.
+Le bucket doit être créé dans Supabase Dashboard → Storage → New bucket, sous le nom exact `double-backups`, avec **Public bucket désactivé**. Le worker vérifie ce réglage et échoue si le bucket manque ou est public. Ne créer aucune politique anonyme d’upload ou de lecture.
+
+Un ancien bucket privé `maktaba-backups` peut être conservé en lecture seule. Il n’est jamais supprimé ni renommé automatiquement. Si une migration est souhaitée, copier manuellement ses objets vers `double-backups` avec des identifiants administrateur, vérifier les tailles et SHA256, puis conserver l’ancien bucket jusqu’à validation humaine.
 
 Variables facultatives : `BACKUP_ENABLED`, `BACKUP_RETENTION_DAILY`, `BACKUP_RETENTION_WEEKLY`, `BACKUP_RETENTION_MONTHLY`, `BACKUP_WEEKLY_DAY` (0 = dimanche UTC), `BACKUP_TEMP_DIRECTORY`, `PG_DUMP_PATH`, `PG_RESTORE_PATH`, `BACKUP_SOURCE_LABEL` et `BACKUP_VERIFY_DATABASE_URL`.
 
@@ -46,9 +48,9 @@ La liste extensible par défaut est `products,sales,customers,app_settings,users
 Les chemins ne sont jamais écrasés :
 
 ```text
-daily/YYYY/MM/maktaba-railway-full-YYYY-MM-DD_HH-mm-ssZ.dump
-weekly/YYYY/maktaba-railway-weekly-YYYY-MM-DD_HH-mm-ssZ.dump
-monthly/YYYY/maktaba-railway-monthly-YYYY-MM-DD_HH-mm-ssZ.dump
+daily/YYYY/MM/double-library-railway-full-YYYY-MM-DD_HH-mm-ssZ.dump
+weekly/YYYY/double-library-railway-weekly-YYYY-MM-DD_HH-mm-ssZ.dump
+monthly/YYYY/double-library-railway-monthly-YYYY-MM-DD_HH-mm-ssZ.dump
 ```
 
 Chaque dump possède un manifeste `.json` contenant le nom, la date UTC, la source, les versions PostgreSQL/pg_dump, la taille, le SHA256, le format, la vérification `pg_restore`, l’environnement, la catégorie et la version du worker. Aucun secret ni URL de connexion n’y figure.

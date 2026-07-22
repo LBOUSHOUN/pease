@@ -74,6 +74,9 @@ export interface ProductListRow {
   unit: string;
   shelfLocation: string | null;
   isActive: boolean;
+  archivedAt?: string | null;
+  archivedBy?: number | null;
+  canDeletePermanently?: boolean;
   trackStock: boolean;
   isLowStock: boolean;
   isOutOfStock: boolean;

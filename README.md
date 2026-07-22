@@ -1,4 +1,4 @@
-# Maktaba POS
+# Double Library POS
 
 > Le dépôt contient désormais deux architectures distinctes. `apps/desktop` est la version hors ligne SQLite existante. `apps/api` et `apps/web` sont la fondation PostgreSQL en ligne. Il n’existe aucune synchronisation : ne faites jamais accepter des ventes de production aux deux systèmes simultanément.
 
@@ -32,7 +32,7 @@ npm install
 npm run tauri dev
 ```
 
-La base `maktaba-pos.sqlite3` est créée dans le dossier de données de l’application résolu par Tauri (sur Windows, sous `%APPDATA%\com.maktaba.pos`). Elle n’est jamais placée dans le dépôt. Les migrations s’exécutent automatiquement et ne suppriment aucune donnée.
+La base locale historique `maktaba-pos.sqlite3` est conservée dans le dossier de données résolu par Tauri. À la première ouverture sous `%APPDATA%\com.pc.doublelibrary`, l’application copie et vérifie de façon idempotente les données trouvées sous l’ancien identifiant, sans supprimer ni écraser l’original.
 
 ## Vérification
 

@@ -78,6 +78,13 @@
       "when": 1784671200000,
       "tag": "0010_shared_register",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1784737307536,
+      "tag": "0011_striped_siren",
+      "breakpoints": true
     }
   ]
 }

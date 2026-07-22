@@ -1041,7 +1041,7 @@ export function PosPage({ user }: { user: SafeUser }) {
           ? await findCachedProductByCode(code)
           : (await request<ProductLookup>(`/products/lookup/${encodeURIComponent(code)}`)).product);
       if (!product) throw new Error(`Produit introuvable · Code-barres : ${code}`);
-      if (!product.isActive) throw new Error("Ce produit est inactif.");
+      if (!product.isActive) throw new Error("Ce produit est archivé et ne peut pas être vendu.");
       if (serialized || cachedSerialized) {
         const unitBarcode = serialized?.unit.barcode ?? cachedSerialized!.barcode;
         if (serialized && serialized.unit.status !== "available")
@@ -1463,8 +1463,8 @@ export function SaleDetails() {
           </div>
           <section className="receipt-document">
           <div className="receipt-head">
-            {!logoFailed && <img className="receipt-logo" src="/branding/logo-doubel.png" alt="Librarie doubel" onError={() => setLogoFailed(true)} />}
-            <b>{sale.shopName || "Librarie doubel"}</b>
+            {!logoFailed && <img className="receipt-logo" src="/branding/logo-doubel.png" alt="Double Library" onError={() => setLogoFailed(true)} />}
+            <b>{sale.shopName || "Double Library"}</b>
             <span>{sale.shopAddress}</span>
             <span>Téléphone : {sale.shopPhone || "0713010739"}</span>
             <strong>TICKET DE CAISSE</strong>

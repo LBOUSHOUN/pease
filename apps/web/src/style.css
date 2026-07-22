@@ -102,6 +102,65 @@
   color: #176b52;
   padding: 0;
 }
+.danger-text {
+  color: #a23b32;
+}
+.action-menu {
+  position: relative;
+  display: inline-block;
+}
+.action-menu-trigger {
+  min-width: 96px;
+}
+.action-menu-trigger::after {
+  content: " ▾";
+}
+.action-menu-panel {
+  position: absolute;
+  right: 0;
+  z-index: 20;
+  min-width: 230px;
+  max-width: min(80vw, 320px);
+  margin-top: 0.35rem;
+  padding: 0.35rem;
+  background: white;
+  border: 1px solid #d9e4df;
+  border-radius: 8px;
+  box-shadow: 0 12px 30px #142c2424;
+}
+.action-menu-panel a,
+.action-menu-panel button.link {
+  display: block;
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  border-radius: 6px;
+  color: #173d32;
+  text-align: left;
+  text-decoration: none;
+  font-weight: 650;
+}
+.action-menu-panel a:hover,
+.action-menu-panel button.link:hover,
+.action-menu-panel a:focus,
+.action-menu-panel button.link:focus {
+  background: #eef7f4;
+  outline: none;
+}
+.action-menu-panel .danger-text {
+  color: #a23b32;
+}
+.action-explanation {
+  margin: 0.35rem 0.65rem 0.45rem;
+  color: #6a5549;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+.product-detail-actions {
+  margin-bottom: 1rem;
+}
+.product-detail-actions h2 {
+  margin-top: 0;
+}
 .notice,
 .empty {
   padding: 1rem;
@@ -201,6 +260,7 @@ input {
   font-size: 24px;
   font-weight: 800;
 }
+.auth-brand { margin: 12px 0 4px; color: #176b52; font-weight: 800; }
 .auth form {
   display: grid;
   gap: 12px;

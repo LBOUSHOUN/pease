@@ -4,10 +4,10 @@ import { assertNonEmptyDump, assertSupportedPgDumpVersion, backupFilename, backu
 const date = new Date("2026-07-22T03:04:05.123Z");
 describe("automated PostgreSQL backup logic", () => {
   it("generates stable UTC filenames and category paths", () => {
-    expect(backupFilename(date)).toBe("maktaba-railway-full-2026-07-22_03-04-05Z.dump");
-    expect(backupObjectPath("daily", date)).toBe("daily/2026/07/maktaba-railway-full-2026-07-22_03-04-05Z.dump");
-    expect(backupObjectPath("weekly", date)).toBe("weekly/2026/maktaba-railway-weekly-2026-07-22_03-04-05Z.dump");
-    expect(backupObjectPath("monthly", date)).toBe("monthly/2026/maktaba-railway-monthly-2026-07-22_03-04-05Z.dump");
+    expect(backupFilename(date)).toBe("double-library-railway-full-2026-07-22_03-04-05Z.dump");
+    expect(backupObjectPath("daily", date)).toBe("daily/2026/07/double-library-railway-full-2026-07-22_03-04-05Z.dump");
+    expect(backupObjectPath("weekly", date)).toBe("weekly/2026/double-library-railway-weekly-2026-07-22_03-04-05Z.dump");
+    expect(backupObjectPath("monthly", date)).toBe("monthly/2026/double-library-railway-monthly-2026-07-22_03-04-05Z.dump");
   });
   it("creates a safe manifest without secrets", () => {
     const manifest = createManifest({ filename: backupFilename(date), createdAt: date.toISOString(), sourceLabel: "railway-production", serverVersion: "18.4", pgDumpVersion: "pg_dump 18.4", sizeBytes: 123, sha256: "ABC", environment: "production", retentionCategory: "daily", workerVersion: "1" });

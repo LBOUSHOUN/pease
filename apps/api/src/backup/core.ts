@@ -21,7 +21,7 @@ export type BackupManifest = {
 const stamp = (date: Date) => date.toISOString().replace(/\.\d{3}Z$/, "Z").replace("T", "_").replace(/:/g, "-");
 export function backupFilename(date: Date, category: BackupCategory = "daily") {
   const label = category === "daily" ? "full" : category;
-  return `maktaba-railway-${label}-${stamp(date)}.dump`;
+  return `double-library-railway-${label}-${stamp(date)}.dump`;
 }
 export function backupObjectPath(category: BackupCategory, date: Date, filename = backupFilename(date, category)) {
   const year = String(date.getUTCFullYear()), month = String(date.getUTCMonth() + 1).padStart(2, "0");

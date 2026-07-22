@@ -226,6 +226,30 @@ describe("online authentication", () => {
       expect(r.json().desktopSession).toBeUndefined();
     }
   });
+  it("returns lifecycle permissions for existing role-based users", async () => {
+    await owner();
+    const argon2 = (await import("argon2")).default;
+    await database.sql`
+      insert into users(full_name,username,password_hash,role,must_change_password) values
+      ('Responsable','manager_existing',${await argon2.hash("Secret123")},'manager',false),
+      ('Caissier','cashier_existing',${await argon2.hash("Secret123")},'cashier',false)
+    `;
+    const login = async (username: string) => {
+      const response = await app.inject({ method: "POST", url: "/api/auth/login", payload: { login: username, password: "Secret123" } });
+      expect(response.statusCode, response.body).toBe(200);
+      const profile = await app.inject({ url: "/api/auth/me", headers: { cookie: cookie(response) } });
+      expect(profile.statusCode, profile.body).toBe(200);
+      return profile.json().user.permissions as string[];
+    };
+    expect(await login("owner")).toEqual(expect.arrayContaining(["products.archive", "products.restore", "products.delete_permanently"]));
+    const manager = await login("manager_existing");
+    expect(manager).toEqual(expect.arrayContaining(["products.archive", "products.restore"]));
+    expect(manager).not.toContain("products.delete_permanently");
+    const cashier = await login("cashier_existing");
+    expect(cashier).not.toContain("products.archive");
+    expect(cashier).not.toContain("products.restore");
+    expect(cashier).not.toContain("products.delete_permanently");
+  });
   it("issues only a hashed, revocable desktop bearer session", async () => {
     await owner();
     const login = await app.inject({
@@ -383,6 +407,60 @@ const productBody = (
 });
 
 describe("online catalog and stock", () => {
+  it("archives, hides, restores and permanently deletes only an unused product", async () => {
+    const session = await phase2Owner();
+    const cat = (await category(session)).json();
+    const product = (await app.inject({ method: "POST", url: "/api/products", headers: { cookie: session }, payload: productBody(cat.id) })).json();
+
+    const archived = await app.inject({ method: "POST", url: `/api/products/${product.id}/archive`, headers: { cookie: session } });
+    expect(archived.statusCode, archived.body).toBe(200);
+    expect(archived.json()).toMatchObject({ id: product.id, isActive: false });
+    expect(archived.json().archivedAt).toBeTruthy();
+    expect((await app.inject({ url: "/api/products?status=active", headers: { cookie: session } })).json().rows).toHaveLength(0);
+    const archivedLookup = await app.inject({ url: `/api/products/lookup/${product.manufacturerBarcode}`, headers: { cookie: session } });
+    expect(archivedLookup.statusCode).toBe(200);
+    expect(archivedLookup.json().product.isActive).toBe(false);
+    const saleLookup = await app.inject({ url: `/api/products/lookup/${product.manufacturerBarcode}?saleReady=true`, headers: { cookie: session } });
+    expect(saleLookup.statusCode).toBe(409);
+    expect(saleLookup.json().message).toContain("archivé");
+
+    const restored = await app.inject({ method: "POST", url: `/api/products/${product.id}/restore`, headers: { cookie: session } });
+    expect(restored.statusCode, restored.body).toBe(200);
+    expect(restored.json()).toMatchObject({ id: product.id, isActive: true, archivedAt: null, archivedBy: null });
+    const [auditCounts] = await database.sql`select count(*) filter(where action='product.archived')::int archived,count(*) filter(where action='product.restored')::int restored from audit_logs where entity_id=${product.id}`;
+    expect(auditCounts).toMatchObject({ archived: 1, restored: 1 });
+
+    const deleted = await app.inject({ method: "DELETE", url: `/api/products/${product.id}`, headers: { cookie: session } });
+    expect(deleted.statusCode, deleted.body).toBe(204);
+    expect(await database.sql`select id from products where id=${product.id}`).toHaveLength(0);
+    const [deleteAudit] = await database.sql`select old_values_json from audit_logs where action='product.permanently_deleted' and entity_id=${product.id}`;
+    expect(deleteAudit?.old_values_json).toContain(product.name);
+  });
+
+  it("blocks permanent deletion for stock or history and enforces lifecycle permissions", async () => {
+    const session = await phase2Owner();
+    const cat = (await category(session)).json();
+    const stocked = (await app.inject({ method: "POST", url: "/api/products", headers: { cookie: session }, payload: productBody(cat.id, { initialQuantity: 1 }) })).json();
+    const stockBlocked = await app.inject({ method: "DELETE", url: `/api/products/${stocked.id}`, headers: { cookie: session } });
+    expect(stockBlocked.statusCode).toBe(409);
+    expect(stockBlocked.json().message).toContain("stock");
+
+    const historical = (await app.inject({ method: "POST", url: "/api/products", headers: { cookie: session }, payload: productBody(cat.id, { name: "Historique", sku: "HIST-1", manufacturerBarcode: "611000000099" }) })).json();
+    await database.sql`insert into product_price_history(product_id,price_type,old_value_cents,new_value_cents,changed_by) values(${historical.id},'selling',100,200,1)`;
+    const historyBlocked = await app.inject({ method: "DELETE", url: `/api/products/${historical.id}`, headers: { cookie: session } });
+    expect(historyBlocked.statusCode).toBe(409);
+    expect(historyBlocked.json().message).toContain("historique");
+
+    const argon2 = (await import("argon2")).default;
+    await database.sql`insert into users(full_name,username,password_hash,role,must_change_password) values('Responsable','manager_lifecycle',${await argon2.hash("Secret123")},'manager',false),('Caissier','cashier_lifecycle',${await argon2.hash("Secret123")},'cashier',false)`;
+    const managerLogin = await app.inject({ method: "POST", url: "/api/auth/login", payload: { login: "manager_lifecycle", password: "Secret123" } });
+    const cashierLogin = await app.inject({ method: "POST", url: "/api/auth/login", payload: { login: "cashier_lifecycle", password: "Secret123" } });
+    const target = (await app.inject({ method: "POST", url: "/api/products", headers: { cookie: session }, payload: productBody(cat.id, { name: "Permissions", sku: "PERM-1", manufacturerBarcode: "611000000098" }) })).json();
+    expect((await app.inject({ method: "POST", url: `/api/products/${target.id}/archive`, headers: { cookie: cookie(managerLogin) } })).statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: `/api/products/${target.id}/restore`, headers: { cookie: cookie(managerLogin) } })).statusCode).toBe(200);
+    expect((await app.inject({ method: "DELETE", url: `/api/products/${target.id}`, headers: { cookie: cookie(managerLogin) } })).statusCode).toBe(403);
+    expect((await app.inject({ method: "POST", url: `/api/products/${target.id}/archive`, headers: { cookie: cookie(cashierLogin) } })).statusCode).toBe(403);
+  });
   it("creates, searches, edits and toggles normalized categories", async () => {
     const session = await phase2Owner(),
       created = await category(session);

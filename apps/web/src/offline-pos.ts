@@ -151,6 +151,11 @@ export async function findCachedProductByCode(code: string): Promise<ProductList
   return (await invoke<ProductListRow | null>("lookup_cached_product", { code })) ?? undefined;
 }
 
+export async function markCachedProductArchived(productId: number) {
+  if (!isTauriRuntime()) return;
+  await invoke("mark_cached_product_archived", { productId });
+}
+
 export async function queueOfflineSale(payload: OfflineSalePayload, reservationId?: string): Promise<string> {
   if (!isTauriRuntime()) {
     throw new Error("Les ventes hors ligne sont disponibles uniquement dans l’application de bureau.");

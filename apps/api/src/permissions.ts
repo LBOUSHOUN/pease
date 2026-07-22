@@ -14,6 +14,9 @@ const all = [
   "products.create",
   "products.edit",
   "products.deactivate",
+  "products.archive",
+  "products.restore",
+  "products.delete_permanently",
   "categories.view",
   "categories.manage",
   "stock.view",
@@ -81,6 +84,7 @@ export function permissions(role: Role) {
           "users.reset_password",
           "users.assign_roles",
           "workers.manage",
+          "products.delete_permanently",
         ].includes(x),
     );
   if (role === "cashier")

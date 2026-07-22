@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Maktaba POS",
-  "version": "0.1.0",
-  "identifier": "com.maktaba.pos",
+  "productName": "Double Library POS",
+  "version": "0.1.1",
+  "identifier": "com.pc.doublelibrary",
   "build": {
     "beforeDevCommand": "node -e \"process.exit(0)\"",
     "devUrl": "http://127.0.0.1:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Maktaba POS",
+        "title": "Double Library POS",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
@@ -37,3 +37,4 @@
     ]
   }
 }
+

@@ -311,7 +311,7 @@ export async function registerPhase4(app: FastifyInstance) {
             >`select * from products where id in ${sql(ids)} order by id for update`;
           if (
             products.length !== ids.length ||
-            products.some((v) => v.product_type !== "physical_product")
+            products.some((v) => v.product_type !== "physical_product" || !v.is_active)
           )
             throw new Error("PRODUCT");
           if (products.some((v) => v.inventory_mode === "serialized"))

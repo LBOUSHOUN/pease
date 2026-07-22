@@ -153,6 +153,8 @@ export const products = pgTable(
     unit: text().notNull().default("unité"),
     shelfLocation: text("shelf_location"),
     isActive: boolean("is_active").notNull().default(true),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    archivedBy: integer("archived_by").references(() => users.id),
     trackStock: boolean("track_stock").notNull().default(true),
     createdBy: integer("created_by")
       .notNull()

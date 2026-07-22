@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{Manager, State};
-const DESKTOP_TOKEN_SERVICE: &str = "com.maktaba.pos";
+const DESKTOP_TOKEN_SERVICE: &str = "com.pc.doublelibrary";
+const LEGACY_DESKTOP_TOKEN_SERVICES: [&str; 2] = ["com.pc.maktaba-pos", "com.maktaba.pos"];
 const DESKTOP_TOKEN_ACCOUNT: &str = "desktop-session";
 
 fn desktop_token_entry() -> Result<keyring::Entry, String> {
@@ -38,16 +39,38 @@ fn save_desktop_session_token(token: String) -> Result<(), String> {
 fn load_desktop_session_token() -> Result<Option<String>, String> {
     match desktop_token_entry()?.get_password() {
         Ok(token) => Ok(Some(token)),
-        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(keyring::Error::NoEntry) => {
+            for service in LEGACY_DESKTOP_TOKEN_SERVICES {
+                let legacy = keyring::Entry::new(service, DESKTOP_TOKEN_ACCOUNT)
+                    .map_err(|_| "Stockage sécurisé indisponible.".to_string())?;
+                if let Ok(token) = legacy.get_password() {
+                    desktop_token_entry()?
+                        .set_password(&token)
+                        .map_err(|_| "Migration de la session sécurisée impossible.".to_string())?;
+                    if desktop_token_entry()?.get_password().ok().as_deref() != Some(token.as_str())
+                    {
+                        return Err("Vérification de la session migrée impossible.".into());
+                    }
+                    return Ok(Some(token));
+                }
+            }
+            Ok(None)
+        }
         Err(_) => Err("Lecture du stockage sécurisé impossible.".to_string()),
     }
 }
 #[tauri::command]
 fn delete_desktop_session_token() -> Result<(), String> {
     match desktop_token_entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(_) => Err("Suppression de la session sécurisée impossible.".to_string()),
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(_) => return Err("Suppression de la session sécurisée impossible.".to_string()),
     }
+    for service in LEGACY_DESKTOP_TOKEN_SERVICES {
+        if let Ok(entry) = keyring::Entry::new(service, DESKTOP_TOKEN_ACCOUNT) {
+            let _ = entry.delete_credential();
+        }
+    }
+    Ok(())
 }
 
 fn valid_offline_auth_snapshot(value: &Value) -> bool {
@@ -226,6 +249,9 @@ fn role_permissions(role: &str) -> Vec<String> {
         "products.create",
         "products.edit",
         "products.deactivate",
+        "products.archive",
+        "products.restore",
+        "products.delete_permanently",
         "categories.manage",
         "stock.view",
         "stock.adjust",
@@ -277,6 +303,7 @@ fn role_permissions(role: &str) -> Vec<String> {
             .iter()
             .copied()
             .filter(|p| !matches!(*p, "backup.manage" | "settings.manage" | "audit.view"))
+            .filter(|p| *p != "products.delete_permanently")
             .collect(),
         "cashier" => vec![
             "dashboard.view",
@@ -1118,6 +1145,28 @@ fn lookup_cached_product(code: String, db: State<Database>) -> Result<Option<Val
 }
 
 #[tauri::command]
+fn mark_cached_product_archived(product_id: i64, db: State<Database>) -> Result<(), String> {
+    if product_id <= 0 {
+        return Err("Produit invalide".into());
+    }
+    let mut connection = db.connect()?;
+    let transaction = connection.transaction().map_err(db_err)?;
+    transaction
+        .execute(
+            "UPDATE offline_products SET is_active=0,payload_json=json_set(payload_json,'$.isActive',json('false')),updated_at=?1 WHERE server_id=?2",
+            params![chrono::Utc::now().to_rfc3339(), product_id],
+        )
+        .map_err(db_err)?;
+    transaction
+        .execute(
+            "UPDATE offline_serialized_units SET product_active=0 WHERE product_id=?1",
+            [product_id],
+        )
+        .map_err(db_err)?;
+    transaction.commit().map_err(db_err)
+}
+
+#[tauri::command]
 fn get_offline_cache_status(db: State<Database>) -> Result<Value, String> {
     let c = db.connect()?;
     let product_count: i64 = c
@@ -1463,6 +1512,7 @@ pub fn run() {
             replace_offline_cache,
             list_cached_products,
             lookup_cached_product,
+            mark_cached_product_archived,
             get_offline_cache_status,
             create_sale,
             list_customers,
@@ -1493,7 +1543,7 @@ pub fn run() {
             exports::export_csv
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Maktaba POS")
+        .expect("error while running Double Library POS")
 }
 
 #[cfg(test)]
@@ -1516,6 +1566,11 @@ mod tests {
     #[test]
     fn permissions_are_role_based() {
         assert!(role_permissions("global_admin").contains(&"settings.manage".into()));
+        assert!(role_permissions("global_admin").contains(&"products.delete_permanently".into()));
+        assert!(role_permissions("manager").contains(&"products.archive".into()));
+        assert!(role_permissions("manager").contains(&"products.restore".into()));
+        assert!(!role_permissions("manager").contains(&"products.delete_permanently".into()));
+        assert!(!role_permissions("cashier").contains(&"products.archive".into()));
         assert!(!role_permissions("cashier").contains(&"settings.manage".into()))
     }
     #[test]

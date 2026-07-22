@@ -31,6 +31,12 @@ import {
   auditLogs,
   categories,
   products,
+  productPriceHistory,
+  productUnits,
+  purchaseItems,
+  returnItems,
+  saleItems,
+  serializedReceivingSessions,
   stockMovements,
   users,
 } from "./db/schema.js";
@@ -105,6 +111,18 @@ const pf = {
   unit: products.unit,
   shelfLocation: products.shelfLocation,
   isActive: products.isActive,
+  archivedAt: products.archivedAt,
+  archivedBy: products.archivedBy,
+  canDeletePermanently: raw<boolean>`(
+    ${products.currentStock} = 0
+    and not exists (select 1 from ${saleItems} where ${saleItems.productId} = ${products.id})
+    and not exists (select 1 from ${purchaseItems} where ${purchaseItems.productId} = ${products.id})
+    and not exists (select 1 from ${returnItems} where ${returnItems.productId} = ${products.id})
+    and not exists (select 1 from ${stockMovements} where ${stockMovements.productId} = ${products.id})
+    and not exists (select 1 from ${productPriceHistory} where ${productPriceHistory.productId} = ${products.id})
+    and not exists (select 1 from ${productUnits} where ${productUnits.productId} = ${products.id})
+    and not exists (select 1 from ${serializedReceivingSessions} where ${serializedReceivingSessions.productId} = ${products.id})
+  )`.as("can_delete_permanently"),
   trackStock: products.trackStock,
   createdBy: products.createdBy,
   createdAt: products.createdAt,
@@ -516,8 +534,9 @@ export async function registerPhase2(app: FastifyInstance) {
           ),
         )
         .limit(1);
-      if (!row || (p.data.saleReady && !row.isActive))
-        return absent(reply, req.id, "Produit introuvable.");
+      if (!row) return absent(reply, req.id, "Produit introuvable.");
+      if (p.data.saleReady && !row.isActive)
+        return clash(reply, req.id, "Ce produit est archivé et ne peut pas être vendu.");
       return { product: safe(req, row) };
     },
   );
@@ -645,31 +664,91 @@ export async function registerPhase2(app: FastifyInstance) {
       }
     },
   );
-  for (const active of [true, false])
-    app.post(
-      `/api/products/:id/${active ? "activate" : "deactivate"}`,
-      { preHandler: requirePermission("products.deactivate") },
-      async (req, reply) => {
-        const p = idParamSchema.safeParse(req.params);
-        if (!p.success) return bad(reply, req.id);
-        const [row] = await db.transaction(async (tx) => {
-          const changed = await tx
-            .update(products)
-            .set({ isActive: active, updatedAt: new Date() })
-            .where(eq(products.id, p.data.id))
-            .returning();
-          if (changed[0])
-            await tx.insert(auditLogs).values({
-              userId: req.user!.id,
-              action: `product.${active ? "activated" : "deactivated"}`,
-              entityType: "product",
-              entityId: p.data.id,
-            });
-          return changed;
-        });
-        return row ?? absent(reply, req.id, "Produit introuvable.");
-      },
-    );
+  app.post("/api/products/:id/archive", { preHandler: requirePermission("products.archive") }, async (req, reply) => {
+    const parsed = idParamSchema.safeParse(req.params);
+    if (!parsed.success) return bad(reply, req.id);
+    const result = await db.transaction(async (tx) => {
+      const [old] = await tx.select().from(products).where(eq(products.id, parsed.data.id)).limit(1);
+      if (!old) return { kind: "missing" as const };
+      if (!old.isActive) return { kind: "archived" as const };
+      const now = new Date();
+      const [row] = await tx.update(products).set({ isActive: false, archivedAt: now, archivedBy: req.user!.id, updatedAt: now }).where(and(eq(products.id, old.id), eq(products.isActive, true))).returning();
+      if (!row) return { kind: "archived" as const };
+      await tx.insert(auditLogs).values({ userId: req.user!.id, action: "product.archived", entityType: "product", entityId: old.id, oldValuesJson: JSON.stringify({ name: old.name, isActive: true }), newValuesJson: JSON.stringify({ name: old.name, isActive: false, archivedAt: now.toISOString() }) });
+      return { kind: "ok" as const, row };
+    });
+    if (result.kind === "missing") return absent(reply, req.id, "Produit introuvable.");
+    if (result.kind === "archived") return clash(reply, req.id, "Ce produit est déjà archivé.");
+    return safe(req, { ...result.row, categoryName: null });
+  });
+
+  app.post("/api/products/:id/restore", { preHandler: requirePermission("products.restore") }, async (req, reply) => {
+    const parsed = idParamSchema.safeParse(req.params);
+    if (!parsed.success) return bad(reply, req.id);
+    try {
+      const result = await db.transaction(async (tx) => {
+        const [old] = await tx.select().from(products).where(eq(products.id, parsed.data.id)).limit(1);
+        if (!old) return { kind: "missing" as const };
+        if (old.isActive) return { kind: "active" as const };
+        const conflicts = await tx.select({ id: products.id }).from(products).where(and(eq(products.isActive, true), raw`${products.id} <> ${old.id}`, or(old.sku ? eq(products.sku, old.sku) : undefined, old.manufacturerBarcode ? eq(products.manufacturerBarcode, old.manufacturerBarcode) : undefined, eq(products.internalBarcode, old.internalBarcode)))).limit(1);
+        if (conflicts.length) return { kind: "conflict" as const };
+        const [row] = await tx.update(products).set({ isActive: true, archivedAt: null, archivedBy: null, updatedAt: new Date() }).where(and(eq(products.id, old.id), eq(products.isActive, false))).returning();
+        if (!row) return { kind: "active" as const };
+        await tx.insert(auditLogs).values({ userId: req.user!.id, action: "product.restored", entityType: "product", entityId: old.id, oldValuesJson: JSON.stringify({ name: old.name, isActive: false }), newValuesJson: JSON.stringify({ name: old.name, isActive: true }) });
+        return { kind: "ok" as const, row };
+      });
+      if (result.kind === "missing") return absent(reply, req.id, "Produit introuvable.");
+      if (result.kind === "active") return clash(reply, req.id, "Ce produit est déjà actif.");
+      if (result.kind === "conflict") return clash(reply, req.id, "Le code-barres ou le SKU est déjà utilisé par un produit actif.");
+      return safe(req, { ...result.row, categoryName: null });
+    } catch (error) {
+      if (unique(error)) return clash(reply, req.id, "Le code-barres ou le SKU est déjà utilisé par un produit actif.");
+      throw error;
+    }
+  });
+
+  app.delete("/api/products/:id", { preHandler: requirePermission("products.delete_permanently") }, async (req, reply) => {
+    const parsed = idParamSchema.safeParse(req.params);
+    if (!parsed.success) return bad(reply, req.id);
+    try {
+      const result = await db.transaction(async (tx) => {
+        const [product] = await tx.select().from(products).where(eq(products.id, parsed.data.id)).limit(1);
+        if (!product) return { kind: "missing" as const };
+        if (product.currentStock !== 0) return { kind: "stock" as const };
+        const checks = await Promise.all([
+          tx.select({ id: saleItems.id }).from(saleItems).where(eq(saleItems.productId, product.id)).limit(1),
+          tx.select({ id: purchaseItems.id }).from(purchaseItems).where(eq(purchaseItems.productId, product.id)).limit(1),
+          tx.select({ id: returnItems.id }).from(returnItems).where(eq(returnItems.productId, product.id)).limit(1),
+          tx.select({ id: stockMovements.id }).from(stockMovements).where(eq(stockMovements.productId, product.id)).limit(1),
+          tx.select({ id: productPriceHistory.id }).from(productPriceHistory).where(eq(productPriceHistory.productId, product.id)).limit(1),
+          tx.select({ id: productUnits.id }).from(productUnits).where(eq(productUnits.productId, product.id)).limit(1),
+          tx.select({ id: serializedReceivingSessions.id }).from(serializedReceivingSessions).where(eq(serializedReceivingSessions.productId, product.id)).limit(1),
+        ]);
+        if (checks.some((rows) => rows.length > 0)) return { kind: "history" as const };
+        await tx.insert(auditLogs).values({ userId: req.user!.id, action: "product.permanently_deleted", entityType: "product", entityId: product.id, oldValuesJson: JSON.stringify({ id: product.id, name: product.name, sku: product.sku, manufacturerBarcode: product.manufacturerBarcode, internalBarcode: product.internalBarcode, isActive: product.isActive, currentStock: product.currentStock }), newValuesJson: JSON.stringify({ eligible: true }) });
+        const deleted = await tx.delete(products).where(and(eq(products.id, product.id), eq(products.currentStock, 0))).returning({ id: products.id });
+        return deleted.length ? { kind: "ok" as const } : { kind: "history" as const };
+      });
+      if (result.kind === "missing") return absent(reply, req.id, "Produit introuvable.");
+      if (result.kind === "stock") return clash(reply, req.id, "Le stock du produit doit être égal à zéro avant sa suppression définitive.");
+      if (result.kind === "history") return clash(reply, req.id, "Ce produit possède un historique et ne peut pas être supprimé. Archivez-le à la place.");
+      return reply.code(204).send();
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error && (error as { code: string }).code === "23503") return clash(reply, req.id, "Ce produit possède un historique et ne peut pas être supprimé. Archivez-le à la place.");
+      throw error;
+    }
+  });
+  for (const active of [true, false]) app.post(
+    `/api/products/:id/${active ? "activate" : "deactivate"}`,
+    { preHandler: requirePermission("products.deactivate") },
+    async (req, reply) => {
+      const parsed = idParamSchema.safeParse(req.params);
+      if (!parsed.success) return bad(reply, req.id);
+      const now = new Date();
+      const [row] = await db.update(products).set({ isActive: active, archivedAt: active ? null : now, archivedBy: active ? null : req.user!.id, updatedAt: now }).where(eq(products.id, parsed.data.id)).returning();
+      return row ?? absent(reply, req.id, "Produit introuvable.");
+    },
+  );
   app.get(
     "/api/stock",
     { preHandler: requirePermission("stock.view") },
@@ -801,6 +880,7 @@ export async function registerPhase2(app: FastifyInstance) {
             .where(eq(products.id, p.data.productId))
             .limit(1);
           if (!product) throw Object.assign(new Error(), { kind: "missing" });
+          if (!product.isActive) throw Object.assign(new Error(), { kind: "inactive" });
           if (product.productType !== "physical_product" || !product.trackStock)
             throw Object.assign(new Error(), { kind: "tracking" });
           if (product.inventoryMode === "serialized")
@@ -851,6 +931,8 @@ export async function registerPhase2(app: FastifyInstance) {
         const k = (e as { kind?: string }).kind;
         if (k === "missing")
           return absent(reply, req.id, "Produit introuvable.");
+        if (k === "inactive")
+          return clash(reply, req.id, "Ce produit est archivé et ne peut pas être ajusté.");
         if (k === "tracking")
           return clash(
             reply,

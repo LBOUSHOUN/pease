@@ -311,7 +311,8 @@ function FormShell({
   return (
     <main className="auth">
       <section>
-        <div className="logo">M</div>
+        <div className="logo" aria-hidden="true">DL</div>
+        <p className="auth-brand">Double Library POS</p>
         <h1>{title}</h1>
         {error && <div className="error">{error}</div>}
         {children}
@@ -606,7 +607,7 @@ function Layout({
           product = (await request<ProductUnitLookup>(`/product-units/lookup/${encodeURIComponent(barcode)}`)).product;
         }
         if (!product.isActive) {
-          setScannerWarning("Ce produit est inactif.");
+          setScannerWarning("Ce produit est archivé et ne peut pas être vendu.");
           return;
         }
         setUnknownBarcode("");
@@ -646,7 +647,7 @@ function Layout({
     <div className="app">
       <aside id="app-sidebar" className={menu ? "open" : ""} aria-label="Navigation principale">
         <div className="brand">
-          Maktaba <small>Version en ligne</small>
+          Double Library POS <small>Version en ligne</small>
         </div>
         <nav aria-label="Modules">
           <NavLink to="/">Tableau de bord</NavLink>
@@ -724,7 +725,7 @@ function Layout({
         )}
         <header>
           <button className="menu-toggle" aria-label="Ouvrir la navigation" aria-controls="app-sidebar" aria-expanded={menu} onClick={() => setMenu(!menu)}>☰</button>
-          <span className="topbar-title">Maktaba POS</span>
+          <span className="topbar-title">Double Library POS</span>
           {scannerAvailable && (
             <button type="button" className="scanner-toggle secondary" aria-pressed={scannerEnabled} onClick={() => setScannerEnabled((value) => !value)}>
               {scannerEnabled ? "Scanner global activé" : "Scanner global désactivé"}
@@ -807,7 +808,7 @@ function Layout({
             path="/products/:id"
             element={
               <Lazy>
-                <ProductDetails user={user} />
+                <ProductDetails user={user} offline={offline} />
               </Lazy>
             }
           />

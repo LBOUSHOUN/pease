@@ -19,8 +19,10 @@ impl Database {
             .map_err(|_| "Dossier de données introuvable".to_string())?;
         fs::create_dir_all(&dir)
             .map_err(|_| "Impossible de créer le dossier de données".to_string())?;
+        let path = dir.join("maktaba-pos.sqlite3");
+        migrate_legacy_database(&dir, &path)?;
         let db = Self {
-            path: dir.join("maktaba-pos.sqlite3"),
+            path,
             lock: Mutex::new(()),
         };
         db.migrate()?;
@@ -264,8 +266,47 @@ INSERT INTO schema_migrations(version,name) VALUES(5,'serialized_unit_cache');
     }
 }
 
+fn migrate_legacy_database(new_dir: &Path, new_path: &Path) -> Result<(), String> {
+    let marker = new_dir.join("double-library-migration-v1.complete");
+    if marker.exists() {
+        return Ok(());
+    }
+    let Some(parent) = new_dir.parent() else {
+        return Ok(());
+    };
+    let legacy = ["com.pc.maktaba-pos", "com.maktaba.pos"]
+        .iter()
+        .map(|identifier| parent.join(identifier).join("maktaba-pos.sqlite3"))
+        .find(|path| path.is_file());
+    let Some(legacy) = legacy else {
+        return Ok(());
+    };
+    if new_path.exists() {
+        eprintln!(
+            "[desktop-migration] anciennes et nouvelles données présentes; aucune donnée écrasée"
+        );
+        return Ok(());
+    }
+    let source = Connection::open(&legacy)
+        .map_err(|_| "Anciennes données locales illisibles".to_string())?;
+    let mut destination = Connection::open(new_path)
+        .map_err(|_| "Migration des données locales impossible".to_string())?;
+    let backup = rusqlite::backup::Backup::new(&source, &mut destination)
+        .map_err(|_| "Migration des données locales impossible".to_string())?;
+    backup
+        .run_to_completion(5, std::time::Duration::from_millis(50), None)
+        .map_err(|_| "Migration des données locales impossible".to_string())?;
+    drop(backup);
+    drop(destination);
+    drop(source);
+    Database::validate_file(new_path)?;
+    fs::write(marker, "legacy database copied and verified\n")
+        .map_err(|_| "Marquage de la migration impossible".to_string())?;
+    Ok(())
+}
+
 const SCHEMA: &str = r#"
-CREATE TABLE app_settings(id INTEGER PRIMARY KEY CHECK(id=1),shop_name TEXT NOT NULL DEFAULT 'Maktaba',phone TEXT,address TEXT,receipt_footer TEXT,currency TEXT NOT NULL DEFAULT 'MAD',barcode_prefix TEXT NOT NULL DEFAULT 'MKT',next_barcode_sequence INTEGER NOT NULL DEFAULT 1,low_stock_default INTEGER NOT NULL DEFAULT 5,receipt_width INTEGER NOT NULL DEFAULT 80,automatic_backup INTEGER NOT NULL DEFAULT 0,backup_retention INTEGER NOT NULL DEFAULT 7,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE app_settings(id INTEGER PRIMARY KEY CHECK(id=1),shop_name TEXT NOT NULL DEFAULT 'Double Library',phone TEXT,address TEXT,receipt_footer TEXT,currency TEXT NOT NULL DEFAULT 'MAD',barcode_prefix TEXT NOT NULL DEFAULT 'MKT',next_barcode_sequence INTEGER NOT NULL DEFAULT 1,low_stock_default INTEGER NOT NULL DEFAULT 5,receipt_width INTEGER NOT NULL DEFAULT 80,automatic_backup INTEGER NOT NULL DEFAULT 0,backup_retention INTEGER NOT NULL DEFAULT 7,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE users(id INTEGER PRIMARY KEY,full_name TEXT NOT NULL,username TEXT NOT NULL COLLATE NOCASE UNIQUE,email TEXT COLLATE NOCASE UNIQUE,phone TEXT,password_hash TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN('global_admin','manager','cashier','stock_worker')),is_active INTEGER NOT NULL DEFAULT 1,must_change_password INTEGER NOT NULL DEFAULT 0,last_login_at TEXT,created_by INTEGER REFERENCES users(id),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE categories(id INTEGER PRIMARY KEY,name TEXT NOT NULL COLLATE NOCASE UNIQUE,description TEXT,is_active INTEGER NOT NULL DEFAULT 1,created_by INTEGER NOT NULL REFERENCES users(id),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE products(id INTEGER PRIMARY KEY,category_id INTEGER REFERENCES categories(id),name TEXT NOT NULL,description TEXT,product_type TEXT NOT NULL CHECK(product_type IN('physical_product','service')),sku TEXT UNIQUE,manufacturer_barcode TEXT UNIQUE,internal_barcode TEXT NOT NULL UNIQUE,qr_identifier TEXT NOT NULL UNIQUE,purchase_price_cents INTEGER NOT NULL DEFAULT 0 CHECK(purchase_price_cents>=0),selling_price_cents INTEGER NOT NULL CHECK(selling_price_cents>=0),wholesale_price_cents INTEGER NOT NULL DEFAULT 0 CHECK(wholesale_price_cents>=0),wholesale_min_quantity INTEGER NOT NULL DEFAULT 1,current_stock INTEGER NOT NULL DEFAULT 0 CHECK(current_stock>=0),minimum_stock INTEGER NOT NULL DEFAULT 0,unit TEXT NOT NULL DEFAULT 'unité',shelf_location TEXT,is_active INTEGER NOT NULL DEFAULT 1,track_stock INTEGER NOT NULL DEFAULT 1,created_by INTEGER NOT NULL REFERENCES users(id),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
@@ -318,6 +359,35 @@ mod tests {
         assert_eq!(serialized, 1);
         drop(c);
         std::fs::remove_file(p).ok();
+    }
+    #[test]
+    fn legacy_identity_database_is_copied_once_without_overwrite() {
+        let root =
+            std::env::temp_dir().join(format!("double-library-migration-{}", uuid::Uuid::new_v4()));
+        let legacy_dir = root.join("com.pc.maktaba-pos");
+        let new_dir = root.join("com.pc.doublelibrary");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::create_dir_all(&new_dir).unwrap();
+        let legacy_path = legacy_dir.join("maktaba-pos.sqlite3");
+        let legacy_db = Database::temporary(legacy_path).unwrap();
+        legacy_db.connect().unwrap().execute("INSERT INTO offline_metadata(key,value_json,updated_at) VALUES('device_id','{\"id\":\"device-1\"}','2026-07-22')", []).unwrap();
+        drop(legacy_db);
+        let new_path = new_dir.join("maktaba-pos.sqlite3");
+        migrate_legacy_database(&new_dir, &new_path).unwrap();
+        let migrated = Connection::open(&new_path).unwrap();
+        let value: String = migrated
+            .query_row(
+                "SELECT value_json FROM offline_metadata WHERE key='device_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(value.contains("device-1"));
+        drop(migrated);
+        let original_size = std::fs::metadata(&new_path).unwrap().len();
+        migrate_legacy_database(&new_dir, &new_path).unwrap();
+        assert_eq!(std::fs::metadata(&new_path).unwrap().len(), original_size);
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

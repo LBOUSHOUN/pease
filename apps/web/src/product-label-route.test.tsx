@@ -26,7 +26,7 @@ const product = {
   internalBarcode: "MKT000000123",
   sellingPriceCents: 123450,
 };
-const settings = { shopName: "Librarie doubel", labelSize: "40x30" };
+const settings = { shopName: "Double Library", labelSize: "40x30" };
 
 function renderRoute() {
   return render(<MemoryRouter initialEntries={["/products/7/label"]}>
@@ -74,7 +74,7 @@ describe("actual product label route", () => {
   it("shows the French error instead of falling back to QR", () => {
     vi.mocked(JsBarcode).mockImplementationOnce(() => { throw new Error("invalid"); });
     render(<LabelBarcode code="MKT000000123" />);
-    expect(screen.getByRole("alert")).toHaveTextContent("Le code-barres ne peut pas Ãªtre gÃ©nÃ©rÃ©.");
+    expect(screen.getByRole("alert")).toHaveTextContent("Le code-barres ne peut pas être généré.");
     expect(document.querySelector("img")).toBeNull();
   });
 });

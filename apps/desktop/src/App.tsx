@@ -177,7 +177,7 @@ function Onboarding({ done }: { done: (u: User) => void }) {
     <main className="auth">
       <section>
         <div className="brand">M</div>
-        <h1>Bienvenue dans Maktaba POS</h1>
+        <h1>Bienvenue dans Double Library POS</h1>
         <p>
           Créez le propriétaire du magasin. Vos données resteront sur cet
           ordinateur.
@@ -298,7 +298,7 @@ function Shell({
         <div className="side-brand">
           <b>M</b>
           <span>
-            Maktaba POS<small>Gestion locale</small>
+            Double Library POS<small>Gestion locale</small>
           </span>
         </div>
         <nav>
@@ -329,7 +329,7 @@ function Shell({
           <div>
             <strong>
               {nav.find((x) => location.pathname.startsWith("/" + x[0]))?.[1] ??
-                "Maktaba POS"}
+                "Double Library POS"}
             </strong>
             <small>
               {" "}

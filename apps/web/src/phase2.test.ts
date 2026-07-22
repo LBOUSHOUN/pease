@@ -11,10 +11,33 @@ import { request } from "./api";
 import { centsToMad, madToCents } from "./money";
 import { isEditable, ScannerBuffer } from "./scanner";
 import { calculateStockAfter } from "./stock-utils";
+import { readFileSync } from "node:fs";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Phase 2 web utilities", () => {
+  it("renders the safe archive, restore and typed permanent-delete workflow", () => {
+    const source = readFileSync(new URL("./Phase2.tsx", import.meta.url), "utf8");
+    expect(source).toContain("Archiver ce produit ?");
+    expect(source).toContain("Restaurer le produit ?");
+    expect(source).toContain("Supprimer définitivement ce produit ?");
+    expect(source).toContain("deleteEligible = product.canDeletePermanently === true");
+    expect(source).toContain("Ce produit possède un historique et ne peut pas être supprimé. Archivez-le à la place.");
+    expect(source).toContain("typed !== product.name");
+    expect(source).toContain('useState("active")');
+  });
+  it("uses the actual rendered product action menu for list and detail lifecycle actions", () => {
+    const source = readFileSync(new URL("./Phase2.tsx", import.meta.url), "utf8");
+    const styles = readFileSync(new URL("./style.css", import.meta.url), "utf8");
+    expect(source).toContain("function ProductActionsMenu");
+    expect(source).toContain('aria-haspopup="menu"');
+    expect(source).toContain('event.key === "Escape"');
+    expect(source).toContain("<ProductActionsMenu product={x} user={user}");
+    expect(source).toContain("product-detail-actions");
+    expect(source).toContain("showDeleteExplanation");
+    expect(styles).toContain(".action-menu-panel");
+    expect(styles).toContain("z-index: 20");
+  });
   it("converts MAD without floating-point rounding", () => {
     expect(madToCents("12.34")).toBe(1234);
     expect(madToCents("12,3")).toBe(1230);

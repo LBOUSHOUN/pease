@@ -16,6 +16,7 @@ import type {
   StockListResponse,
   StockMovementListResponse,
   SafeUser,
+  RegisterStatus,
 } from "@maktaba/shared-types";
 import { buildApiUrl, request } from "./api";
 import { centsToMad, madToCents } from "./money";
@@ -23,7 +24,74 @@ import { calculateStockAfter } from "./stock-utils";
 import { useScanner } from "./use-scanner";
 import { enqueueGlobalScan } from "./global-scanner";
 import { applyBarcodePrefill, readBarcodePrefill } from "./product-create-flow";
+import { isTauriRuntime, markCachedProductArchived, readQueueAsync, refreshOfflineCache } from "./offline-pos";
 const has = (u: SafeUser, p: string) => u.permissions.includes(p);
+async function refreshProductCache() {
+  if (!isTauriRuntime()) return;
+  const register = await request<RegisterStatus>("/register/status");
+  await refreshOfflineCache({ isOpen: register.isOpen, sessionId: register.sessionId });
+}
+function ProductLifecycleActions({ product, user, offline, changed, showDeleteExplanation = false }: { product: ProductListRow; user: SafeUser; offline: boolean; changed: () => void; showDeleteExplanation?: boolean }) {
+  const [action, setAction] = useState<"archive" | "restore" | "delete" | null>(null), [typed, setTyped] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const canDelete = has(user, "products.delete_permanently"), deleteEligible = product.canDeletePermanently === true;
+  const submit = async () => {
+    if (!action || busy) return;
+    if (offline) return setError("Cette action nécessite une connexion au serveur.");
+    if (action === "delete" && typed !== product.name) return;
+    setBusy(true); setError("");
+    try {
+      if (action === "delete" && isTauriRuntime()) {
+        const referenced = (await readQueueAsync()).some((record) => record.status !== "synced" && record.payload.items.some((item) => item.productId === product.id));
+        if (referenced) throw new Error("Ce produit est référencé par une opération hors ligne et ne peut pas être supprimé.");
+      }
+      await request(`/products/${product.id}${action === "delete" ? "" : `/${action}`}`, { method: action === "delete" ? "DELETE" : "POST" });
+      if (action === "archive") await markCachedProductArchived(product.id);
+      if (action !== "delete") await refreshProductCache().catch(() => undefined);
+      setAction(null); setTyped(""); changed();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Action impossible."); }
+    finally { setBusy(false); }
+  };
+  return <>
+    {product.isActive && has(user, "products.archive") && <button className="link danger-text" type="button" onClick={() => setAction("archive")}>Archiver</button>}
+    {!product.isActive && has(user, "products.restore") && <button className="link" type="button" onClick={() => setAction("restore")}>Restaurer</button>}
+    {canDelete && deleteEligible && <button className="link danger-text" type="button" onClick={() => setAction("delete")}>Supprimer définitivement</button>}
+    {canDelete && !deleteEligible && showDeleteExplanation && <p className="action-explanation">Ce produit possède un historique et ne peut pas être supprimé. Archivez-le à la place.</p>}
+    {action && <div className="scanner-unknown" role="dialog" aria-modal="true" aria-labelledby="product-action-title"><div className="section-card">
+      <h2 id="product-action-title">{action === "archive" ? "Archiver ce produit ?" : action === "restore" ? "Restaurer le produit ?" : "Supprimer définitivement ce produit ?"}</h2>
+      <p>{action === "archive" ? "Le produit ne sera plus disponible à la vente, mais son historique sera conservé." : action === "restore" ? "Le produit redeviendra disponible à la vente." : "Cette action est irréversible."}</p>
+      {action === "delete" && <label>Saisissez exactement <strong>{product.name}</strong><input value={typed} onChange={(event) => setTyped(event.target.value)} autoFocus /></label>}
+      <ErrorBox value={error} />
+      <div className="form-actions"><button type="button" className="secondary" onClick={() => { if (!busy) { setAction(null); setTyped(""); } }}>Annuler</button><button type="button" className={action === "delete" ? "danger" : ""} disabled={busy || action === "delete" && typed !== product.name} onClick={() => void submit()}>{busy ? action === "archive" ? "Archivage…" : action === "restore" ? "Restauration…" : "Suppression…" : action === "archive" ? "Archiver" : action === "restore" ? "Restaurer" : "Supprimer définitivement"}</button></div>
+    </div></div>}
+  </>;
+}
+function ProductActionsMenu({ product, user, changed }: { product: ProductListRow; user: SafeUser; changed: () => void }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [open]);
+  return (
+    <div className="action-menu">
+      <button type="button" className="secondary action-menu-trigger" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+        Actions
+      </button>
+      {open && (
+        <div className="action-menu-panel" role="menu">
+          <Link role="menuitem" to={`/products/${product.id}`} onClick={() => setOpen(false)}>Voir</Link>
+          {product.isActive && has(user, "products.edit") && <Link role="menuitem" to={`/products/${product.id}/edit`} onClick={() => setOpen(false)}>Modifier</Link>}
+          {product.isActive && has(user, "labels.print") && <Link role="menuitem" to={`/products/${product.id}/label`} onClick={() => setOpen(false)}>Imprimer l'étiquette</Link>}
+          {product.isActive && product.trackStock && product.inventoryMode === "quantity" && has(user, "stock.adjust") && <Link role="menuitem" to={`/stock/adjust?productId=${product.id}`} onClick={() => setOpen(false)}>Ajuster le stock</Link>}
+          <ProductLifecycleActions product={product} user={user} offline={false} changed={() => { setOpen(false); changed(); }} showDeleteExplanation />
+        </div>
+      )}
+    </div>
+  );
+}
 function useDebounced(value: string, ms = 300) {
   const [result, setResult] = useState(value);
   useEffect(() => {
@@ -280,7 +348,7 @@ export function ProductsPage({ user }: { user: SafeUser }) {
     [type, setType] = useState(""),
     [categoryId, setCategoryId] = useState(""),
     [categoryOptions, setCategoryOptions] = useState<Category[]>([]),
-    [status, setStatus] = useState("all"),
+    [status, setStatus] = useState("active"),
     [low, setLow] = useState(false),
     [out, setOut] = useState(false),
     [page, setPage] = useState(1),
@@ -326,23 +394,6 @@ export function ProductsPage({ user }: { user: SafeUser }) {
     } catch (e) {
       setFound(undefined);
       setError(e instanceof Error ? e.message : "Produit introuvable.");
-    }
-  };
-  const toggle = async (product: ProductListRow) => {
-    if (
-      !confirm(
-        `${product.isActive ? "Désactiver" : "Activer"} ${product.name} ?`,
-      )
-    )
-      return;
-    try {
-      await request(
-        `/products/${product.id}/${product.isActive ? "deactivate" : "activate"}`,
-        { method: "POST" },
-      );
-      setRefresh((x) => x + 1);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Erreur");
     }
   };
   useScanner((code) => void lookup(code));
@@ -397,7 +448,7 @@ export function ProductsPage({ user }: { user: SafeUser }) {
         <select value={status} onChange={(e) => setStatus(e.target.value)}>
           <option value="all">Tous les états</option>
           <option value="active">Actifs</option>
-          <option value="inactive">Inactifs</option>
+          <option value="inactive">Archivés</option>
         </select>
         <label>
           <input
@@ -421,7 +472,7 @@ export function ProductsPage({ user }: { user: SafeUser }) {
             setSearch("");
             setType("");
             setCategoryId("");
-            setStatus("all");
+            setStatus("active");
             setLow(false);
             setOut(false);
           }}
@@ -474,24 +525,9 @@ export function ProductsPage({ user }: { user: SafeUser }) {
                       "—"
                     )}
                   </td>
-                  <td>{x.isActive ? "Actif" : "Inactif"}</td>
+                  <td>{x.isActive ? "Actif" : <span className="badge off">Archivé</span>}</td>
                   <td>
-                    <Link to={`/products/${x.id}`}>Voir</Link>
-                    {has(user, "products.edit") && (
-                      <>
-                        {" "}
-                        · <Link to={`/products/${x.id}/edit`}>Modifier</Link>
-                      </>
-                    )}
-                    {has(user, "products.deactivate") && (
-                      <>
-                        {" "}
-                        ·{" "}
-                        <button className="link" onClick={() => void toggle(x)}>
-                          {x.isActive ? "Désactiver" : "Activer"}
-                        </button>
-                      </>
-                    )}
+                    <ProductActionsMenu product={x} user={user} changed={() => setRefresh((value) => value + 1)} />
                   </td>
                 </tr>
               ))}
@@ -870,11 +906,11 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
     </main>
   );
 }
-export function ProductDetails({ user }: { user: SafeUser }) {
+export function ProductDetails({ user, offline = false }: { user: SafeUser; offline?: boolean }) {
   const { id } = useParams(),
     [x, setX] = useState<ProductDetail>(),
     [moves, setMoves] = useState<StockMovementListResponse>(),
-    [error, setError] = useState("");
+    [error, setError] = useState(""), [refresh, setRefresh] = useState(0);
   useEffect(() => {
     const c = new AbortController();
     request<ProductDetail>(`/products/${id}`, { signal: c.signal })
@@ -886,7 +922,7 @@ export function ProductDetails({ user }: { user: SafeUser }) {
         { signal: c.signal },
       ).then(setMoves);
     return () => c.abort();
-  }, [id, user]);
+  }, [id, user, refresh]);
   if (error)
     return (
       <main className="page">
@@ -898,22 +934,33 @@ export function ProductDetails({ user }: { user: SafeUser }) {
     <main className="page">
       <div className="title">
         <h1>{x.name}</h1>
-        {has(user, "products.edit") && (
-          <Link className="button" to={`/products/${x.id}/edit`}>
-            Modifier
-          </Link>
-        )}
-        {has(user, "labels.print") && (
-          <Link className="button" to={`/products/${x.id}/label`}>
-            Étiquette
-          </Link>
-        )}
-        {x.inventoryMode === "serialized" && has(user, "serialized_units.receive") && (
-          <Link className="button" to={`/serialized-receiving/new?productId=${x.id}`}>
-            Réceptionner des unités
-          </Link>
-        )}
       </div>
+      <section className="section-card product-detail-actions" aria-labelledby="product-detail-actions-title">
+        <h2 id="product-detail-actions-title">Actions</h2>
+        <div className="actions">
+          {x.isActive && !offline && has(user, "products.edit") && (
+            <Link className="button" to={`/products/${x.id}/edit`}>
+              Modifier
+            </Link>
+          )}
+          {x.isActive && !offline && has(user, "labels.print") && (
+            <Link className="button secondary" to={`/products/${x.id}/label`}>
+              Imprimer l'étiquette
+            </Link>
+          )}
+          {x.isActive && !offline && x.trackStock && x.inventoryMode === "quantity" && has(user, "stock.adjust") && (
+            <Link className="button secondary" to={`/stock/adjust?productId=${x.id}`}>
+              Ajuster le stock
+            </Link>
+          )}
+          {x.isActive && !offline && x.inventoryMode === "serialized" && has(user, "serialized_units.receive") && (
+            <Link className="button secondary" to={`/serialized-receiving/new?productId=${x.id}`}>
+              Réceptionner des unités
+            </Link>
+          )}
+          <ProductLifecycleActions product={x} user={user} offline={offline} changed={() => setRefresh((value) => value + 1)} showDeleteExplanation />
+        </div>
+      </section>
       <dl className="details">
         <dt>Catégorie</dt>
         <dd>{x.categoryName}</dd>
@@ -951,7 +998,7 @@ export function ProductDetails({ user }: { user: SafeUser }) {
         <dt>Emplacement</dt>
         <dd>{x.shelfLocation || "—"}</dd>
         <dt>État</dt>
-        <dd>{x.isActive ? "Actif" : "Inactif"}</dd>
+        <dd>{x.isActive ? "Actif" : <span className="badge off">Archivé</span>}</dd>
         <dt>Créé le</dt>
         <dd>{new Date(x.createdAt).toLocaleString("fr-MA")}</dd>
         <dt>Mis à jour le</dt>

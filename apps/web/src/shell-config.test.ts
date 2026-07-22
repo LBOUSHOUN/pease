@@ -37,6 +37,19 @@ describe("desktop development launcher", () => {
 });
 
 describe("shared application shell", () => {
+  it("uses the Double Library brand in the rendered shell, login, PWA and desktop metadata", () => {
+    const app = read("apps/web/src/App.tsx");
+    const html = read("apps/web/index.html");
+    const vite = read("apps/web/vite.config.ts");
+    const tauri = JSON.parse(read("apps/desktop/src-tauri/tauri.conf.json"));
+    expect(app).toContain("Double Library POS");
+    expect(app).toContain('className="auth-brand"');
+    expect(html).toContain("<title>Double Library POS</title>");
+    expect(vite).toContain('name: "Double Library POS"');
+    expect(tauri.productName).toBe("Double Library POS");
+    expect(tauri.identifier).toBe("com.pc.doublelibrary");
+    expect(tauri.app.windows[0].title).toBe("Double Library POS");
+  });
   it("has accessible drawer controls and separate scroll containers", () => {
     const app = read("apps/web/src/App.tsx");
     const css = read("apps/web/src/style.css");

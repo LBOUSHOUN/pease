@@ -8,8 +8,8 @@ export default defineConfig({
       registerType: "prompt",
       devOptions: { enabled: false },
       manifest: {
-        name: "Maktaba POS Online",
-        short_name: "Maktaba",
+        name: "Double Library POS",
+        short_name: "Double Library",
         description: "Gestion en ligne de papeterie",
         theme_color: "#102b24",
         background_color: "#f5f7f6",

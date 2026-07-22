@@ -850,7 +850,7 @@ export function LabelBarcode({ code }: { code: string }) {
     }
   }, [code]);
   return error ? (
-    <span className="label-barcode-error" role="alert">Le code-barres ne peut pas Ãªtre gÃ©nÃ©rÃ©.</span>
+    <span className="label-barcode-error" role="alert">Le code-barres ne peut pas être généré.</span>
   ) : <svg ref={ref} className="label-linear-barcode" role="img" aria-label={`Code-barres ${code}`} />;
 }
 export function ProductLabel() {
@@ -909,7 +909,7 @@ export function ProductLabel() {
         <div className={`labels label-format-${format} size-${settings.labelSize.replace("x", "-")}`}>
           {Array.from({ length: quantity }, (_, i) => (
             <article className="product-label" key={i}>
-              <strong>{settings.shopName || "Librarie doubel"}</strong>
+              <strong>{settings.shopName || "Double Library"}</strong>
               <span>{product.name}</span>
               <LabelBarcode code={product.manufacturerBarcode || product.internalBarcode} />
               <code className="label-barcode-value">{product.manufacturerBarcode || product.internalBarcode}</code>
