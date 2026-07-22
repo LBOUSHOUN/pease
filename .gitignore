@@ -16,3 +16,6 @@ coverage/
 apps/desktop/src-tauri/target/
 
 !apps/api/Dockerfile.backup
+
+# Keep the Railway backup Dockerfile tracked
+!apps/api/Dockerfile.backup
