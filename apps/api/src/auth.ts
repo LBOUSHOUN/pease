@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+﻿import { createHash, randomBytes } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { eq } from "drizzle-orm";
 import { db } from "./db/index.js";
@@ -38,7 +38,7 @@ export async function createSession(userId: number, reply: FastifyReply, desktop
   reply.setCookie(cookie, token, {
     httpOnly: true,
     secure: config.NODE_ENV === "production",
-    sameSite: "lax",
+    sameSite: config.NODE_ENV === "production" ? "none" : "lax",
     path: "/",
     expires,
   });
@@ -53,7 +53,7 @@ export async function revoke(req: FastifyRequest, reply: FastifyReply) {
   reply.clearCookie(cookie, {
     httpOnly: true,
     secure: config.NODE_ENV === "production",
-    sameSite: "lax",
+    sameSite: config.NODE_ENV === "production" ? "none" : "lax",
     path: "/",
   });
 }
@@ -75,13 +75,13 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
   if (!row)
     return reply.code(401).send({
       code: "SESSION_INVALID",
-      message: "Session expirée",
+      message: "Session expirÃ©e",
       requestId: req.id,
     });
   if (row.session.revokedAt || !row.user.isActive)
-    return reply.code(401).send({ code: "SESSION_REVOKED", message: "Session révoquée", requestId: req.id });
+    return reply.code(401).send({ code: "SESSION_REVOKED", message: "Session rÃ©voquÃ©e", requestId: req.id });
   if (row.session.expiresAt <= new Date())
-    return reply.code(401).send({ code: "SESSION_EXPIRED", message: "Session expirée", requestId: req.id });
+    return reply.code(401).send({ code: "SESSION_EXPIRED", message: "Session expirÃ©e", requestId: req.id });
   req.user = safeUser(row.user);
   await db.update(sessions).set({ lastSeenAt: new Date() }).where(eq(sessions.id, row.session.id));
 }
@@ -114,3 +114,4 @@ declare module "fastify" {
     user?: SafeUser;
   }
 }
+
