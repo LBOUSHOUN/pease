@@ -1,20 +1,19 @@
-FROM node:24-bookworm-slim AS build
+FROM node:24-alpine AS build
+RUN apk add --no-cache postgresql17-client
 WORKDIR /app
 COPY package*.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY packages packages
 RUN npm ci --workspace @maktaba/api --include-workspace-root
 COPY apps/api apps/api
-RUN npm run build -w @maktaba/api && npm prune --omit=dev
+RUN npm run build -w @maktaba/api
 
-FROM postgres:18-bookworm
-COPY --from=node:24-bookworm-slim /usr/local/ /usr/local/
+FROM node:24-alpine
+RUN apk add --no-cache postgresql17-client
 WORKDIR /app
-COPY --from=build /app/package*.json ./
-COPY --from=build /app/node_modules node_modules
-COPY --from=build /app/apps/api/package.json apps/api/package.json
-COPY --from=build /app/apps/api/dist apps/api/dist
-RUN useradd --create-home --uid 10001 backup-worker
-USER backup-worker
-ENV NODE_ENV=production BACKUP_TEMP_DIRECTORY=/tmp
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/apps/api/dist ./apps/api/dist
+COPY --from=build /app/apps/api/package.json ./apps/api/package.json
+COPY --from=build /app/package.json ./package.json
+RUN mkdir -p /app/backups
 CMD ["node", "apps/api/dist/backup/worker.js", "run"]
