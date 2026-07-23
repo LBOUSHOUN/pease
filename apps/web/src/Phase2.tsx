@@ -369,7 +369,10 @@ export function ProductsPage({ user }: { user: SafeUser }) {
       if (low) params.set("lowStockOnly", "true");
       if (out) params.set("outOfStockOnly", "true");
       request<ProductListResponse>(`/products?${params}`, { signal: c.signal })
-        .then(setData)
+        .then((result) => {
+          setData(result);
+          setError("");
+        })
         .catch((e) => {
           if (e.name !== "AbortError") setError(e.message);
         });
