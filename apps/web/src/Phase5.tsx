@@ -612,7 +612,9 @@ export function SettingsPage({ user }: { user: SafeUser }) {
     if (!value || busy.current) return;
     busy.current = true;
     try {
-      await request("/settings", { method: "PATCH", json: value });
+      const payload = { ...value };
+      Reflect.deleteProperty(payload, "backupRetention");
+      await request("/settings", { method: "PATCH", json: payload });
       setNotice(
         "Paramètres enregistrés. Les identifiants existants restent inchangés.",
       );
@@ -709,13 +711,6 @@ export function SettingsPage({ user }: { user: SafeUser }) {
           />{" "}
           Prix sur étiquette
         </label>
-        <input
-          type="number"
-          min="1"
-          max="365"
-          value={value.backupRetention}
-          onChange={(e) => set("backupRetention", Number(e.target.value))}
-        />
         <button disabled={!has(user, "settings.manage")}>Enregistrer</button>
       </form>
     </main>
@@ -783,6 +778,9 @@ export function BackupsPage({ user }: { user: SafeUser }) {
       </div>
       <ErrorBox value={error} />
       {notice && <div className="notice">{notice}</div>}
+      <div className="notice">
+        La conservation des sauvegardes est configurée dans le service de sauvegarde.
+      </div>
       <table>
         <thead>
           <tr>

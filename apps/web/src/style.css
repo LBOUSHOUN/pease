@@ -695,3 +695,38 @@ button, .button { min-height: 42px; display: inline-flex; align-items: center; j
   .receipt-document td, .receipt-document th { overflow-wrap: anywhere; }
   .receipt-document tr, .receipt-document .details { break-inside: avoid; }
 }
+
+/* POS price adjustment layout */
+.cart-line > span {
+  grid-column: 1;
+  min-width: 0;
+}
+.cart-line > input {
+  grid-column: 2;
+}
+.cart-line > div:not(.inline-actions) {
+  grid-column: 3;
+  display: grid;
+  gap: .15rem;
+  text-align: right;
+}
+.cart-line > div:not(.inline-actions) small {
+  display: block;
+  color: var(--color-muted);
+}
+.cart-line > .inline-actions {
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+}
+.cart-line > .serialized-cart-units {
+  grid-column: 1 / -1;
+}
+.cart-line > button:last-child {
+  grid-column: 4;
+  grid-row: 1;
+}
+.scanner-unknown .section-card label {
+  display: grid;
+  gap: .35rem;
+  margin-bottom: .75rem;
+}

@@ -79,6 +79,11 @@ describe("Phase 5 administration and reporting UI rules", () => {
     ).toBe(true));
   it("validates receipt width and timezone-shaped settings", () => {
     expect(settingsUpdateSchema.safeParse(settings).success).toBe(true);
+    const withoutLegacyRetention = { ...settings };
+    Reflect.deleteProperty(withoutLegacyRetention, "backupRetention");
+    expect(settingsUpdateSchema.safeParse(withoutLegacyRetention).success).toBe(
+      true,
+    );
     expect(
       settingsUpdateSchema.safeParse({ ...settings, receiptWidth: 70 }).success,
     ).toBe(false);
