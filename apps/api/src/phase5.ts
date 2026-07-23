@@ -13,6 +13,7 @@ import {
   passwordResetSchema,
   reportFiltersSchema,
   settingsUpdateSchema,
+  topProductsFiltersSchema,
   userCreateSchema,
   userFiltersSchema,
   userUpdateSchema,
@@ -113,6 +114,29 @@ function range(
     throw new Error("RANGE");
   return { start, end };
 }
+function topProductsRange(
+  p: ReturnType<typeof topProductsFiltersSchema.parse>,
+  timezoneValue: string,
+) {
+  const today = todayIn(timezoneValue);
+  let start = shift(today, -29),
+    end = today;
+  if (p.period === "today") start = today;
+  if (p.period === "7d") start = shift(today, -6);
+  if (p.period === "month") start = `${today.slice(0, 8)}01`;
+  if (p.period === "custom") {
+    if (!p.startDate || !p.endDate) throw new Error("RANGE");
+    start = p.startDate;
+    end = p.endDate;
+  }
+  if (
+    start > end ||
+    (new Date(end).getTime() - new Date(start).getTime()) / 86400000 > 366
+  )
+    throw new Error("RANGE");
+  return { start, end };
+}
+
 async function timezone() {
   const [r] = await sql<Row[]>`select timezone from app_settings where id=1`;
   return String(r?.timezone ?? "Africa/Casablanca");
@@ -143,7 +167,7 @@ async function reportData(
   if (kind === "sales") {
     [summary] = await sql<
       Row[]
-    >`select coalesce(sum(s.total_cents),0)::bigint gross_cents,coalesce(sum(r.return_cents),0)::bigint returns_cents,coalesce(sum(s.total_cents-coalesce(r.return_cents,0)),0)::bigint net_cents,coalesce(sum(s.cash_paid_cents-coalesce(r.cash_cents,0)),0)::bigint cash_cents,coalesce(sum(s.credit_amount_cents-coalesce(r.debt_cents,0)),0)::bigint credit_cents,count(*)::int sale_count,coalesce(sum(si.units),0)::bigint item_quantity from sales s left join lateral(select sum(total_return_value_cents) return_cents,sum(cash_refund_cents) cash_cents,sum(customer_debt_reduction_cents) debt_cents from returns where original_sale_id=s.id) r on true left join lateral(select sum(quantity-returned_quantity) units from sale_items where sale_id=s.id) si on true where (s.created_at at time zone ${tz})::date between ${dates.start}::date and ${dates.end}::date and (${p.paymentMode ?? null}::text is null or s.payment_type=${p.paymentMode ?? null}) and (${limitedUser ?? null}::int is null or s.cashier_id=${limitedUser ?? null})`;
+    >`select coalesce(sum(s.total_cents),0)::bigint gross_cents,coalesce(sum(r.return_cents),0)::bigint returns_cents,coalesce(sum(s.total_cents-coalesce(r.return_cents,0)),0)::bigint net_cents,coalesce(sum(s.cash_paid_cents-coalesce(r.cash_cents,0)),0)::bigint cash_cents,coalesce(sum(s.credit_amount_cents-coalesce(r.debt_cents,0)),0)::bigint credit_cents,count(*)::int sale_count,coalesce(sum(si.units),0)::bigint item_quantity,coalesce(sum(si.manual_discount_cents),0)::bigint manual_discount_cents,coalesce(sum(si.manual_markup_cents),0)::bigint manual_markup_cents,coalesce(sum(si.adjusted_line_count),0)::bigint adjusted_line_count from sales s left join lateral(select sum(total_return_value_cents) return_cents,sum(cash_refund_cents) cash_cents,sum(customer_debt_reduction_cents) debt_cents from returns where original_sale_id=s.id) r on true left join lateral(select sum(quantity-returned_quantity) units,sum((quantity-returned_quantity)*greatest(base_unit_price_cents-unit_price_cents,0)) manual_discount_cents,sum((quantity-returned_quantity)*greatest(unit_price_cents-base_unit_price_cents,0)) manual_markup_cents,count(*) filter(where price_adjustment_type is not null and quantity-returned_quantity>0) adjusted_line_count from sale_items where sale_id=s.id) si on true where (s.created_at at time zone ${tz})::date between ${dates.start}::date and ${dates.end}::date and (${p.paymentMode ?? null}::text is null or s.payment_type=${p.paymentMode ?? null}) and (${limitedUser ?? null}::int is null or s.cashier_id=${limitedUser ?? null})`;
     rows = await sql<
       Row[]
     >`select s.id,s.sale_number,u.full_name worker,coalesce(c.full_name,'') customer,s.payment_type,s.total_cents,coalesce(r.return_cents,0)::bigint returns_cents,(s.total_cents-coalesce(r.return_cents,0))::bigint net_cents,s.cash_paid_cents,s.credit_amount_cents,s.created_at,count(*) over() total_count from sales s join users u on u.id=s.cashier_id left join customers c on c.id=s.customer_id left join lateral(select sum(total_return_value_cents) return_cents from returns where original_sale_id=s.id) r on true where (s.created_at at time zone ${tz})::date between ${dates.start}::date and ${dates.end}::date and (${p.paymentMode ?? null}::text is null or s.payment_type=${p.paymentMode ?? null}) and (${limitedUser ?? null}::int is null or s.cashier_id=${limitedUser ?? null}) and (${p.customerId ?? null}::int is null or s.customer_id=${p.customerId ?? null}) and (${p.search}='' or s.sale_number ilike ${q} or coalesce(c.full_name,'') ilike ${q} or exists(select 1 from sale_items i where i.sale_id=s.id and i.product_name_snapshot ilike ${q})) order by s.created_at desc limit ${p.pageSize} offset ${offset}`;
@@ -612,10 +636,10 @@ export async function registerPhase5(app: FastifyInstance) {
         profit = req.user!.permissions.includes("reports.view_profit");
       const [r] = await sql<
         Row[]
-      >`select (select coalesce(sum(total_cents),0) from sales where (created_at at time zone ${tz})::date=${today}::date) sales,(select coalesce(sum(cash_paid_cents),0) from sales where (created_at at time zone ${tz})::date=${today}::date) cash,(select coalesce(sum(credit_amount_cents),0) from sales where (created_at at time zone ${tz})::date=${today}::date) credit,(select coalesce(sum(total_return_value_cents),0) from returns where (created_at at time zone ${tz})::date=${today}::date) returns,(select coalesce(sum((quantity-returned_quantity)*(unit_price_cents-purchase_price_snapshot_cents)),0) from sale_items join sales on sales.id=sale_items.sale_id where (sales.created_at at time zone ${tz})::date=${today}::date) profit,(select coalesce(sum(current_debt_cents),0) from customers) customer_debt,(select coalesce(sum(current_debt_cents),0) from suppliers) supplier_debt,(select coalesce(sum(amount_cents),0) from expenses where (expense_date at time zone ${tz})::date=${today}::date) expenses,(select count(*) from products where product_type='physical_product' and is_active and current_stock<=minimum_stock) low,(select count(*) from products where product_type='physical_product' and is_active and current_stock=0) out,(select count(*) from cash_register_sessions where status='open') open_registers`;
+      >`select (select coalesce(sum(total_cents),0) from sales where status in ('completed','partially_returned','fully_returned') and (created_at at time zone ${tz})::date=${today}::date) sales,(select coalesce(sum(cash_paid_cents),0) from sales where status in ('completed','partially_returned','fully_returned') and (created_at at time zone ${tz})::date=${today}::date) cash,(select coalesce(sum(credit_amount_cents),0) from sales where status in ('completed','partially_returned','fully_returned') and (created_at at time zone ${tz})::date=${today}::date) credit,(select coalesce(sum(total_return_value_cents),0) from returns where (created_at at time zone ${tz})::date=${today}::date) returns,(select coalesce(sum((quantity-returned_quantity)*(unit_price_cents-purchase_price_snapshot_cents)),0) from sale_items join sales on sales.id=sale_items.sale_id where sales.status in ('completed','partially_returned','fully_returned') and (sales.created_at at time zone ${tz})::date=${today}::date) profit,(select coalesce(sum(current_debt_cents),0) from customers) customer_debt,(select coalesce(sum(current_debt_cents),0) from suppliers) supplier_debt,(select coalesce(sum(amount_cents),0) from expenses where (expense_date at time zone ${tz})::date=${today}::date) expenses,(select count(*) from products where product_type='physical_product' and is_active and current_stock<=minimum_stock) low,(select count(*) from products where product_type='physical_product' and is_active and current_stock=0) out,(select count(*) from cash_register_sessions where status='open') open_registers`;
       const recent = await sql<
         Row[]
-      >`select id,sale_number,total_cents,created_at from sales order by created_at desc limit 5`;
+      >`select id,sale_number,total_cents,created_at from sales where status in ('completed','partially_returned','fully_returned') order by created_at desc limit 5`;
       return {
         salesTodayCents: Number(r!.sales),
         cashSalesTodayCents: Number(r!.cash),
@@ -638,6 +662,58 @@ export async function registerPhase5(app: FastifyInstance) {
       };
     },
   );
+  app.get(
+    "/api/reports/top-products",
+    { preHandler: requirePermission("dashboard.view") },
+    async (req, reply) => {
+      const parsed = topProductsFiltersSchema.safeParse(req.query);
+      if (!parsed.success)
+        return bad(reply, "Filtres des produits les plus vendus invalides.");
+      const tz = await timezone();
+      let dates: { start: string; end: string };
+      try {
+        dates = topProductsRange(parsed.data, tz);
+      } catch {
+        return bad(reply, "Période invalide ou supérieure à 366 jours.");
+      }
+      const rows = await sql<Row[]>`
+        select
+          i.product_id,
+          coalesce(p.name,max(i.product_name_snapshot)) product_name,
+          c.name category_name,
+          sum(i.quantity-i.returned_quantity)::int net_quantity,
+          sum((i.quantity-i.returned_quantity)*i.unit_price_cents)::bigint net_revenue_cents,
+          coalesce(p.current_stock,0)::int current_stock,
+          p.archived_at,
+          p.is_active
+        from sale_items i
+        join sales s on s.id=i.sale_id
+        left join products p on p.id=i.product_id
+        left join categories c on c.id=p.category_id
+        where s.status in ('completed','partially_returned','fully_returned')
+          and (s.created_at at time zone ${tz})::date between ${dates.start}::date and ${dates.end}::date
+        group by i.product_id,p.name,c.name,p.current_stock,p.archived_at,p.is_active
+        having sum(i.quantity-i.returned_quantity)>0
+        order by net_quantity desc,net_revenue_cents desc,i.product_id
+        limit ${parsed.data.limit}`;
+      return {
+        period: parsed.data.period,
+        range: dates,
+        rows: rows.map((row, index) => ({
+          rank: index + 1,
+          productId: Number(row.product_id),
+          productName: row.product_name,
+          categoryName: row.category_name,
+          netQuantitySold: Number(row.net_quantity),
+          netRevenueCents: Number(row.net_revenue_cents),
+          currentStock: Number(row.current_stock),
+          status:
+            row.archived_at || row.is_active === false ? "archived" : "active",
+        })),
+      };
+    },
+  );
+
   for (const kind of Object.keys(reportPermission))
     app.get(
       `/api/reports/${kind}`,
@@ -760,7 +836,7 @@ export async function registerPhase5(app: FastifyInstance) {
       }
       const x = parsed.data;
       await sql.begin(async (tx) => {
-        await tx`update app_settings set shop_name=${x.shopName},phone=${x.phone},address=${x.address},receipt_footer=${x.receiptFooter},currency=${x.currency},timezone=${x.timezone},barcode_prefix=${x.barcodePrefix},low_stock_default=${x.lowStockDefault},receipt_width=${x.receiptWidth},show_barcode_on_receipt=${x.showBarcodeOnReceipt},show_qr_on_label=${x.showQrOnLabel},show_price_on_label=${x.showPriceOnLabel},label_size=${x.labelSize},backup_retention=${x.backupRetention},session_timeout_minutes=${x.sessionTimeoutMinutes},updated_at=now() where id=1`;
+        await tx`update app_settings set shop_name=${x.shopName},phone=${x.phone},address=${x.address},receipt_footer=${x.receiptFooter},currency=${x.currency},timezone=${x.timezone},barcode_prefix=${x.barcodePrefix},low_stock_default=${x.lowStockDefault},receipt_width=${x.receiptWidth},show_barcode_on_receipt=${x.showBarcodeOnReceipt},show_qr_on_label=${x.showQrOnLabel},show_price_on_label=${x.showPriceOnLabel},label_size=${x.labelSize},backup_retention=coalesce(${x.backupRetention ?? null},backup_retention),session_timeout_minutes=${x.sessionTimeoutMinutes},updated_at=now() where id=1`;
         await tx`insert into audit_logs(user_id,action,entity_type,entity_id,new_values_json) values(${req.user!.id},'settings.updated','settings',1,${JSON.stringify({ timezone: x.timezone, receiptWidth: x.receiptWidth, labelSize: x.labelSize })})`;
       });
       return { ok: true };

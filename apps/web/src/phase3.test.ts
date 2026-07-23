@@ -11,6 +11,8 @@ import type { ProductListRow } from "@maktaba/shared-types";
 import { madToCents } from "./money";
 import {
   addCartProduct,
+  calculateCartPriceAdjustment,
+  cartLineUnitPrice,
   denominationTotal,
   estimatedCartTotal,
   estimatedCredit,
@@ -88,6 +90,41 @@ describe("Phase 3 financial and cart utilities", () => {
     expect(twice).toHaveLength(1);
     expect(twice[0]!.quantity).toBe(2);
     expect(estimatedCartTotal(twice)).toBe(2500);
+  });
+  it("applies discounts and markups without changing the catalogue price", () => {
+    const base = product();
+    const discount = calculateCartPriceAdjustment(
+      base.sellingPriceCents,
+      "fixed_discount",
+      250,
+      "Remise client",
+    );
+    const cart = [{ product: base, quantity: 2, priceAdjustment: discount }];
+    expect(cartLineUnitPrice(cart[0]!)).toBe(1000);
+    expect(estimatedCartTotal(cart)).toBe(2000);
+    expect(base.sellingPriceCents).toBe(1250);
+
+    const markup = calculateCartPriceAdjustment(
+      base.sellingPriceCents,
+      "percentage_markup",
+      1000,
+      "Correction de prix",
+    );
+    expect(markup.finalUnitPriceCents).toBe(1375);
+  });
+  it("preserves a line price adjustment when the same product is scanned again", () => {
+    const base = product();
+    const adjustment = calculateCartPriceAdjustment(
+      base.sellingPriceCents,
+      "final_unit_price",
+      900,
+      "Négociation commerciale",
+    );
+    const once = [{ product: base, quantity: 1, priceAdjustment: adjustment }];
+    const twice = addCartProduct(once, base);
+    expect(twice[0]!.quantity).toBe(2);
+    expect(twice[0]!.priceAdjustment).toEqual(adjustment);
+    expect(estimatedCartTotal(twice)).toBe(1800);
   });
   it("supports services and partial allocations", () => {
     const service = product({

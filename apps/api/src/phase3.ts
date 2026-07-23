@@ -15,6 +15,7 @@ import {
 } from "@maktaba/validation";
 import { requirePermission } from "./auth.js";
 import { sql } from "./db/index.js";
+import { validatePriceAdjustment } from "./price-adjustment.js";
 
 type Row = Record<string, any>;
 const bad = (reply: FastifyReply, message: string, code = 400) =>
@@ -24,7 +25,9 @@ const bad = (reply: FastifyReply, message: string, code = 400) =>
         ? "CONFLICT"
         : code === 404
           ? "NOT_FOUND"
-          : "VALIDATION_ERROR",
+          : code === 403
+            ? "FORBIDDEN"
+            : "VALIDATION_ERROR",
     message,
   });
 const pages = (total: number, page: number, pageSize: number) => ({
@@ -98,7 +101,7 @@ export async function registerPhase3(app: FastifyInstance) {
     { preHandler: requirePermission("register.open") },
     async (req, reply) => {
       const parsed = registerOpenSchema.safeParse(req.body);
-      if (!parsed.success) return bad(reply, "Données d’ouverture invalides.");
+      if (!parsed.success) return bad(reply, "DonnÃ©es dâ€™ouverture invalides.");
       const x = parsed.data;
       if (
         x.denominations &&
@@ -149,7 +152,7 @@ export async function registerPhase3(app: FastifyInstance) {
           (error as Error).message === "OPEN_REGISTER" ||
           (error as { code?: string }).code === "23505"
         )
-          return bad(reply, "Vous avez déjà une caisse ouverte.", 409);
+          return bad(reply, "Vous avez dÃ©jÃ  une caisse ouverte.", 409);
         throw error;
       }
     },
@@ -160,13 +163,13 @@ export async function registerPhase3(app: FastifyInstance) {
     { preHandler: requirePermission("register.close") },
     async (req, reply) => {
       const parsed = registerCloseSchema.safeParse(req.body);
-      if (!parsed.success) return bad(reply, "Données de clôture invalides.");
+      if (!parsed.success) return bad(reply, "DonnÃ©es de clÃ´ture invalides.");
       const x = parsed.data,
         actual = denominationTotal(x.denominations);
       if (actual !== x.actualCashCents)
         return bad(
           reply,
-          "Le total des coupures ne correspond pas au montant réel.",
+          "Le total des coupures ne correspond pas au montant rÃ©el.",
         );
       return sql.begin(async (tx) => {
         const duplicate = await tx<
@@ -193,15 +196,15 @@ export async function registerPhase3(app: FastifyInstance) {
             Number(totals?.cash_delta ?? 0),
           difference = actual - expected;
         if (difference !== 0 && !x.differenceReason?.trim())
-          return bad(reply, "Un motif est obligatoire en cas d’écart.");
+          return bad(reply, "Un motif est obligatoire en cas dâ€™Ã©cart.");
         for (const line of x.denominations)
           if (line.quantity)
             await tx`insert into cash_register_denominations(cash_register_session_id,denomination_cents,quantity,total_cents,phase) values(${rows[0].id},${line.denominationCents},${line.quantity},${line.denominationCents * line.quantity},'closing')`;
         const [closed] = await tx<
           Row[]
         >`update cash_register_sessions set status='closed',closed_at=now(),closed_by=${req.user!.id},expected_closing_cents=${expected},actual_closing_cents=${actual},difference_cents=${difference},difference_reason=${x.differenceReason ?? null},closing_note=${x.note ?? null},closing_idempotency_key=${x.idempotencyKey},updated_at=now() where id=${rows[0].id} and status='open' returning id,closed_at`;
-        if (!closed) return bad(reply, "La caisse vient d’être clôturée.", 409);
-        await tx`insert into cash_movements(cash_register_session_id,movement_type,amount_cents,reason,created_by) values(${closed.id},'register_closing',${actual},${x.note ?? "Clôture de caisse"},${req.user!.id})`;
+        if (!closed) return bad(reply, "La caisse vient dâ€™Ãªtre clÃ´turÃ©e.", 409);
+        await tx`insert into cash_movements(cash_register_session_id,movement_type,amount_cents,reason,created_by) values(${closed.id},'register_closing',${actual},${x.note ?? "ClÃ´ture de caisse"},${req.user!.id})`;
         await tx`insert into audit_logs(user_id,action,entity_type,entity_id,new_values_json) values(${req.user!.id},'register.closed','cash_register',${closed.id},${JSON.stringify({ expected, actual, difference })})`;
         return {
           id: Number(closed.id),
@@ -306,7 +309,7 @@ export async function registerPhase3(app: FastifyInstance) {
     { preHandler: requirePermission("customers.manage") },
     async (req, reply) => {
       const p = customerCreateSchema.safeParse(req.body);
-      if (!p.success) return bad(reply, "Données client invalides.");
+      if (!p.success) return bad(reply, "DonnÃ©es client invalides.");
       const x = p.data;
       const phone = normalizePhone(x.phone),
         email = x.email ?? null,
@@ -339,7 +342,7 @@ export async function registerPhase3(app: FastifyInstance) {
       const id = idParamSchema.safeParse(req.params),
         p = customerUpdateSchema.safeParse(req.body);
       if (!id.success || !p.success)
-        return bad(reply, "Données client invalides.");
+        return bad(reply, "DonnÃ©es client invalides.");
       const x = p.data,
         [before] = await sql<
           Row[]
@@ -421,7 +424,7 @@ export async function registerPhase3(app: FastifyInstance) {
           const [ledger] = await tx<
             Row[]
           >`insert into customer_credit_transactions(customer_id,transaction_type,amount_cents,balance_before_cents,balance_after_cents,notes,cash_register_session_id,idempotency_key,created_by) values(${id.data.id},'debt_payment',${-x.amountCents},${before},${after},${x.note ?? null},${reg.id},${x.idempotencyKey},${req.user!.id}) returning id`;
-          await tx`insert into cash_movements(cash_register_session_id,movement_type,amount_cents,reference_type,reference_id,reason,created_by) values(${reg.id},'customer_debt_payment',${x.amountCents},'customer_credit_transaction',${ledger!.id},${x.note ?? "Règlement dette client"},${req.user!.id})`;
+          await tx`insert into cash_movements(cash_register_session_id,movement_type,amount_cents,reference_type,reference_id,reason,created_by) values(${reg.id},'customer_debt_payment',${x.amountCents},'customer_credit_transaction',${ledger!.id},${x.note ?? "RÃ¨glement dette client"},${req.user!.id})`;
           await tx`insert into audit_logs(user_id,action,entity_type,entity_id,new_values_json) values(${req.user!.id},'customer.debt_paid','customer',${id.data.id},${JSON.stringify({ amountCents: x.amountCents, before, after })})`;
           return {
             transactionId: Number(ledger!.id),
@@ -433,13 +436,13 @@ export async function registerPhase3(app: FastifyInstance) {
       } catch (e) {
         const m = (e as Error).message;
         if (m === "NO_REGISTER")
-          return bad(reply, "Ouvrez une caisse avant d’encaisser.", 409);
+          return bad(reply, "Ouvrez une caisse avant dâ€™encaisser.", 409);
         if (m === "NO_CUSTOMER")
           return bad(reply, "Client actif introuvable.", 404);
         if (m === "EXCESS")
-          return bad(reply, "Le paiement dépasse la dette actuelle.", 409);
+          return bad(reply, "Le paiement dÃ©passe la dette actuelle.", 409);
         if ((e as { code?: string }).code === "23505")
-          return bad(reply, "Paiement déjà traité.", 409);
+          return bad(reply, "Paiement dÃ©jÃ  traitÃ©.", 409);
         throw e;
       }
     },
@@ -456,12 +459,34 @@ export async function registerPhase3(app: FastifyInstance) {
         headerKey !== undefined &&
         (typeof headerKey !== "string" || headerKey !== p.data.idempotencyKey)
       )
-        return bad(reply, "La clé d’idempotence ne correspond pas à la vente.");
+        return bad(reply, "La clÃ© dâ€™idempotence ne correspond pas Ã  la vente.");
       const x = p.data,
         merged = new Map<number, number>(),
         unitBarcodes = new Map<number, string[]>(),
-        serializedUnitIds = new Map<number, number[]>();
+        serializedUnitIds = new Map<number, number[]>(),
+        requestedPricing = new Map<number, (typeof x.items)[number]>();
       for (const line of x.items) {
+        const priorPricing = requestedPricing.get(line.productId);
+        if (
+          priorPricing &&
+          JSON.stringify({
+            finalUnitPriceCents: priorPricing.finalUnitPriceCents,
+            priceAdjustmentType: priorPricing.priceAdjustmentType,
+            priceAdjustmentValue: priorPricing.priceAdjustmentValue,
+            priceAdjustmentReason: priorPricing.priceAdjustmentReason,
+          }) !==
+            JSON.stringify({
+              finalUnitPriceCents: line.finalUnitPriceCents,
+              priceAdjustmentType: line.priceAdjustmentType,
+              priceAdjustmentValue: line.priceAdjustmentValue,
+              priceAdjustmentReason: line.priceAdjustmentReason,
+            })
+        )
+          return bad(
+            reply,
+            "Un mÃªme produit ne peut pas avoir deux prix diffÃ©rents dans la mÃªme vente.",
+          );
+        requestedPricing.set(line.productId, line);
         merged.set(
           line.productId,
           (merged.get(line.productId) ?? 0) + line.quantity,
@@ -489,11 +514,26 @@ export async function registerPhase3(app: FastifyInstance) {
               Row[]
             >`select * from products where id in ${sql(ids)} order by id for update`;
           if (products.length !== ids.length) throw new Error("PRODUCT");
-          let total = 0;
+          let total = 0,
+            baseSubtotal = 0,
+            totalDiscount = 0,
+            totalMarkup = 0;
+          const pricing = new Map<
+            number,
+            ReturnType<typeof validatePriceAdjustment>
+          >();
           for (const product of products) {
             if (!product.is_active) throw new Error("INACTIVE");
-            const qty = merged.get(Number(product.id))!,
-              price = Number(product.selling_price_cents);
+            const productId = Number(product.id),
+              qty = merged.get(productId)!,
+              requested = requestedPricing.get(productId)!;
+            const price = validatePriceAdjustment(
+              Number(product.selling_price_cents),
+              Number(product.purchase_price_cents),
+              requested,
+              req.user!.permissions,
+            );
+            pricing.set(productId, price);
             if (product.inventory_mode === "serialized") {
               const codes = unitBarcodes.get(Number(product.id)) ?? [];
               if (codes.length !== qty || new Set(codes).size !== codes.length)
@@ -514,7 +554,10 @@ export async function registerPhase3(app: FastifyInstance) {
               Number(product.current_stock) < qty
             )
               throw new Error("STOCK");
-            total += qty * price;
+            total += qty * price.finalUnitPriceCents;
+            baseSubtotal += qty * price.baseUnitPriceCents;
+            totalDiscount += qty * price.discountPerUnitCents;
+            totalMarkup += qty * price.markupPerUnitCents;
           }
           let cash = 0,
             credit = 0;
@@ -561,11 +604,17 @@ export async function registerPhase3(app: FastifyInstance) {
           await tx`update app_settings set next_sale_sequence=next_sale_sequence+1,updated_at=now() where id=1`;
           const [sale] = await tx<
             Row[]
-          >`insert into sales(sale_number,customer_id,cashier_id,cash_register_session_id,subtotal_cents,discount_cents,total_cents,cash_paid_cents,credit_amount_cents,change_cents,payment_type,status,notes,idempotency_key) values(${number},${x.customerId ?? null},${req.user!.id},${reg?.id ?? null},${total},0,${total},${cash},${credit},0,${x.paymentMode},'completed',${x.note ?? null},${x.idempotencyKey}) returning *`;
+          >`insert into sales(sale_number,customer_id,cashier_id,cash_register_session_id,subtotal_cents,discount_cents,total_cents,cash_paid_cents,credit_amount_cents,change_cents,payment_type,status,notes,idempotency_key) values(${number},${x.customerId ?? null},${req.user!.id},${reg?.id ?? null},${baseSubtotal},${totalDiscount},${total},${cash},${credit},0,${x.paymentMode},'completed',${x.note ?? null},${x.idempotencyKey}) returning *`;
           for (const product of products) {
-            const qty = merged.get(Number(product.id))!,
-              line = qty * Number(product.selling_price_cents);
-            const [saleItem] = await tx<Row[]>`insert into sale_items(sale_id,product_id,product_name_snapshot,sku_snapshot,barcode_snapshot,product_type_snapshot,quantity,unit_price_cents,purchase_price_snapshot_cents,discount_cents,line_total_cents) values(${sale!.id},${product.id},${product.name},${product.sku},${product.internal_barcode},${product.product_type},${qty},${product.selling_price_cents},${product.purchase_price_cents},0,${line}) returning id`;
+            const productId = Number(product.id),
+              qty = merged.get(productId)!,
+              price = pricing.get(productId)!,
+              line = qty * price.finalUnitPriceCents,
+              lineDiscount = qty * price.discountPerUnitCents,
+              adjustedAt = price.type ? new Date().toISOString() : null;
+            const [saleItem] = await tx<Row[]>`insert into sale_items(sale_id,product_id,product_name_snapshot,sku_snapshot,barcode_snapshot,product_type_snapshot,quantity,unit_price_cents,base_unit_price_cents,purchase_price_snapshot_cents,discount_cents,line_total_cents,price_adjustment_type,price_adjustment_value,price_adjustment_reason,price_adjusted_by,price_adjusted_at) values(${sale!.id},${product.id},${product.name},${product.sku},${product.internal_barcode},${product.product_type},${qty},${price.finalUnitPriceCents},${price.baseUnitPriceCents},${product.purchase_price_cents},${lineDiscount},${line},${price.type},${price.value},${price.reason},${price.type ? req.user!.id : null},${adjustedAt}) returning id`;
+            if (price.type)
+              await tx`insert into audit_logs(user_id,action,entity_type,entity_id,new_values_json) values(${req.user!.id},'sale.price_adjusted','sale_item',${saleItem!.id},${JSON.stringify({ saleId: Number(sale!.id), saleNumber: number, productId, productName: product.name, quantity: qty, baseUnitPriceCents: price.baseUnitPriceCents, finalUnitPriceCents: price.finalUnitPriceCents, adjustmentType: price.type, adjustmentValue: price.value, reason: price.reason })})`;
             if (
               product.product_type === "physical_product" &&
               product.track_stock
@@ -592,42 +641,56 @@ export async function registerPhase3(app: FastifyInstance) {
             await tx`update customers set current_debt_cents=${after},updated_at=now() where id=${customer!.id}`;
             await tx`insert into customer_credit_transactions(customer_id,sale_id,transaction_type,amount_cents,balance_before_cents,balance_after_cents,notes,created_by) values(${customer!.id},${sale!.id},'credit_sale',${credit},${beforeDebt},${after},${x.note ?? `Vente ${number}`},${req.user!.id})`;
           }
-          await tx`insert into audit_logs(user_id,action,entity_type,entity_id,new_values_json) values(${req.user!.id},'sale.created','sale',${sale!.id},${JSON.stringify({ number, total, cash, credit })})`;
+          await tx`insert into audit_logs(user_id,action,entity_type,entity_id,new_values_json) values(${req.user!.id},'sale.created','sale',${sale!.id},${JSON.stringify({ number, baseSubtotal, totalDiscount, totalMarkup, total, cash, credit })})`;
           return saleResult(sale!, false);
         });
         return reply.code(result.duplicate ? 200 : 201).send(result);
       } catch (e) {
         const m = (e as Error).message;
+        if (m === "PRICE_PERMISSION")
+          return bad(
+            reply,
+            "Vous nâ€™avez pas lâ€™autorisation de modifier le prix de vente.",
+            403,
+          );
+        if (m === "BELOW_COST")
+          return bad(
+            reply,
+            "La vente sous le prix dâ€™achat nÃ©cessite une autorisation supplÃ©mentaire.",
+            403,
+          );
+        if (["PRICE_DATA", "PRICE_CALCULATION", "PRICE_UNCHANGED", "ADJUSTMENT_VALUE"].includes(m))
+          return bad(reply, "La modification du prix est invalide.");
         if (m === "STOCK") return bad(reply, "Stock insuffisant.", 409);
         if (m === "SERIALIZED_UNITS_REQUIRED")
-          return bad(reply, "Scannez chaque unité sérialisée avant la vente.", 409);
+          return bad(reply, "Scannez chaque unitÃ© sÃ©rialisÃ©e avant la vente.", 409);
         if (m === "SERIALIZED_UNIT_UNAVAILABLE")
-          return bad(reply, "Cette unité a déjà été vendue ou n’est plus disponible.", 409);
+          return bad(reply, "Cette unitÃ© a dÃ©jÃ  Ã©tÃ© vendue ou nâ€™est plus disponible.", 409);
         if (m === "SERIALIZED_UNIT_MISMATCH")
-          return bad(reply, "La référence de l’unité ne correspond pas à son code-barres.", 409);
+          return bad(reply, "La rÃ©fÃ©rence de lâ€™unitÃ© ne correspond pas Ã  son code-barres.", 409);
         if (m === "SERIALIZED_UNITS_UNEXPECTED")
-          return bad(reply, "Les codes d’unité ne sont pas autorisés pour ce produit.", 400);
+          return bad(reply, "Les codes dâ€™unitÃ© ne sont pas autorisÃ©s pour ce produit.", 400);
         if (m === "INACTIVE")
-          return bad(reply, "Un produit est désactivé.", 409);
+          return bad(reply, "Un produit est dÃ©sactivÃ©.", 409);
         if (m === "PRODUCT") return bad(reply, "Produit introuvable.", 404);
         if (m === "NO_REGISTER")
           return bad(reply, "Ouvrez une caisse pour la part comptant.", 409);
         if (m === "CUSTOMER_REQUIRED" || m === "CUSTOMER")
           return bad(
             reply,
-            "Un client actif est obligatoire pour le crédit.",
+            "Un client actif est obligatoire pour le crÃ©dit.",
             409,
           );
         if (m === "LIMIT")
           return bad(
             reply,
-            "La limite de crédit du client serait dépassée.",
+            "La limite de crÃ©dit du client serait dÃ©passÃ©e.",
             409,
           );
         if (m === "ALLOCATION")
-          return bad(reply, "La répartition du paiement est invalide.");
+          return bad(reply, "La rÃ©partition du paiement est invalide.");
         if ((e as { code?: string }).code === "23505")
-          return bad(reply, "Cette vente a déjà été traitée.", 409);
+          return bad(reply, "Cette vente a dÃ©jÃ  Ã©tÃ© traitÃ©e.", 409);
         throw e;
       }
     },
@@ -682,6 +745,11 @@ export async function registerPhase3(app: FastifyInstance) {
         ...saleRow(row),
         subtotalCents: Number(row.subtotal_cents),
         discountCents: Number(row.discount_cents),
+        markupCents: Math.max(
+          0,
+          Number(row.total_cents) -
+            (Number(row.subtotal_cents) - Number(row.discount_cents)),
+        ),
         changeCents: Number(row.change_cents),
         registerSessionId: row.cash_register_session_id
           ? Number(row.cash_register_session_id)
@@ -700,7 +768,17 @@ export async function registerPhase3(app: FastifyInstance) {
           barcode: i.barcode_snapshot,
           quantity: Number(i.quantity),
           unitPriceCents: Number(i.unit_price_cents),
+          baseUnitPriceCents: Number(i.base_unit_price_cents),
           lineTotalCents: Number(i.line_total_cents),
+          priceAdjustmentType: i.price_adjustment_type,
+          priceAdjustmentValue:
+            i.price_adjustment_value === null
+              ? null
+              : Number(i.price_adjustment_value),
+          priceAdjustmentReason: i.price_adjustment_reason,
+          priceAdjustedBy:
+            i.price_adjusted_by === null ? null : Number(i.price_adjusted_by),
+          priceAdjustedAt: i.price_adjusted_at,
         })),
         stockMovements: moves.map((m) => ({
           id: Number(m.id),

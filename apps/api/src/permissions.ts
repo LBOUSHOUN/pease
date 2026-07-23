@@ -28,6 +28,8 @@ const all = [
   "pos.use",
   "sales.view",
   "sales.create",
+  "sales.adjust_price",
+  "sales.sell_below_cost",
   "sales.return",
   "customers.view",
   "customers.credit",
@@ -85,6 +87,7 @@ export function permissions(role: Role) {
           "users.assign_roles",
           "workers.manage",
           "products.delete_permanently",
+          "sales.sell_below_cost",
         ].includes(x),
     );
   if (role === "cashier")

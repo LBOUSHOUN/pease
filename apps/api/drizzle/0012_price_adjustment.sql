@@ -8,20 +8,31 @@ ALTER TABLE "sale_items" ADD CONSTRAINT "sale_items_price_adjusted_by_users_id_f
 UPDATE "sale_items" SET "base_unit_price_cents" = "unit_price_cents" WHERE "base_unit_price_cents" IS NULL;--> statement-breakpoint
 ALTER TABLE "sale_items" ALTER COLUMN "base_unit_price_cents" SET NOT NULL;--> statement-breakpoint
 ALTER TABLE "sale_items" ADD CONSTRAINT "sale_items_price_adjustment_ck" CHECK (
-  "base_unit_price_cents" > 0
-  AND "unit_price_cents" > 0
+  "base_unit_price_cents" >= 0
+  AND "unit_price_cents" >= 0
   AND (
     "price_adjustment_type" IS NULL
     OR "price_adjustment_type" IN ('final_unit_price','fixed_discount','percentage_discount','fixed_markup','percentage_markup')
   )
   AND (
-    "price_adjustment_type" IS NULL
+    (
+      "price_adjustment_type" IS NULL
+      AND "price_adjustment_value" IS NULL
+      AND "price_adjustment_reason" IS NULL
+      AND "price_adjusted_by" IS NULL
+      AND "price_adjusted_at" IS NULL
+      AND "base_unit_price_cents" = "unit_price_cents"
+    )
     OR (
-      "price_adjustment_value" IS NOT NULL
+      "price_adjustment_type" IS NOT NULL
+      AND "unit_price_cents" > 0
+      AND "price_adjustment_value" IS NOT NULL
+      AND "price_adjustment_value" >= 0
       AND "price_adjustment_reason" IS NOT NULL
-      AND length(trim("price_adjustment_reason")) > 0
+      AND length(trim("price_adjustment_reason")) >= 3
       AND "price_adjusted_by" IS NOT NULL
       AND "price_adjusted_at" IS NOT NULL
+      AND "base_unit_price_cents" <> "unit_price_cents"
     )
   )
 );

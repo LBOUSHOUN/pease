@@ -239,9 +239,19 @@ export interface CustomerCreditTransaction {
 export interface CustomerCreditListResponse extends Pagination {
   rows: CustomerCreditTransaction[];
 }
+export type PriceAdjustmentType =
+  | "final_unit_price"
+  | "fixed_discount"
+  | "percentage_discount"
+  | "fixed_markup"
+  | "percentage_markup";
 export interface SaleCartLine {
   productId: number;
   quantity: number;
+  finalUnitPriceCents?: number;
+  priceAdjustmentType?: PriceAdjustmentType;
+  priceAdjustmentValue?: number;
+  priceAdjustmentReason?: string;
 }
 export interface SaleResult {
   id: number;
@@ -280,11 +290,18 @@ export interface SaleItem {
   barcode: string | null;
   quantity: number;
   unitPriceCents: number;
+  baseUnitPriceCents: number;
   lineTotalCents: number;
+  priceAdjustmentType: PriceAdjustmentType | null;
+  priceAdjustmentValue: number | null;
+  priceAdjustmentReason: string | null;
+  priceAdjustedBy: number | null;
+  priceAdjustedAt: string | null;
 }
 export interface SaleDetail extends SaleListRow {
   subtotalCents: number;
   discountCents: number;
+  markupCents: number;
   changeCents: number;
   registerSessionId: number | null;
   notes: string | null;
@@ -478,6 +495,21 @@ export interface ReportResponse {
   pageSize: number;
   totalRows: number;
   totalPages: number;
+}
+export interface TopProductRow {
+  rank: number;
+  productId: number;
+  productName: string;
+  categoryName: string | null;
+  netQuantitySold: number;
+  netRevenueCents: number;
+  currentStock: number;
+  status: "active" | "archived";
+}
+export interface TopProductsResponse {
+  period: "today" | "7d" | "30d" | "month" | "custom";
+  range: DateRange;
+  rows: TopProductRow[];
 }
 export interface DashboardReport {
   salesTodayCents: number;

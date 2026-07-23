@@ -52,7 +52,7 @@ export const barcodeValueSchema = z
   .min(2)
   .max(100)
   .refine((value) => !/[\u0000-\u001f\u007f-\u009f]/u.test(value), {
-    message: "Le code-barres contient des caractÃ¨res non imprimables.",
+    message: "Le code-barres contient des caractères non imprimables.",
   });
 const queryBoolean = z.preprocess(
   (v) => (v === "true" ? true : v === "false" ? false : v),
@@ -282,12 +282,98 @@ export const debtPaymentSchema = z.object({
   note: z.string().trim().max(500).optional().nullable(),
   idempotencyKey: idempotencyKeySchema,
 });
-export const saleCartLineSchema = z.object({
-  productId: z.number().int().positive(),
-  quantity: z.number().int().positive().max(100000),
-  unitBarcodes: z.array(barcodeValueSchema).max(1000).optional(),
-  serializedUnits: z.array(z.object({ id: z.number().int().positive(), barcode: barcodeValueSchema })).max(1000).optional(),
-});
+export const priceAdjustmentTypes = [
+  "final_unit_price",
+  "fixed_discount",
+  "percentage_discount",
+  "fixed_markup",
+  "percentage_markup",
+] as const;
+export type PriceAdjustmentType = (typeof priceAdjustmentTypes)[number];
+
+export function calculateAdjustedUnitPrice(
+  baseUnitPriceCents: number,
+  type: PriceAdjustmentType,
+  value: number,
+) {
+  if (!Number.isSafeInteger(baseUnitPriceCents) || baseUnitPriceCents < 0)
+    throw new Error("BASE_PRICE");
+  if (!Number.isSafeInteger(value) || value < 0 || value > 2_000_000_000)
+    throw new Error("ADJUSTMENT_VALUE");
+  if (type === "percentage_discount" && value >= 10000)
+    throw new Error("ADJUSTMENT_VALUE");
+  if (type.includes("percentage") && value > 1_000_000)
+    throw new Error("ADJUSTMENT_VALUE");
+  let result: number;
+  if (type === "final_unit_price") result = value;
+  else if (type === "fixed_discount") result = baseUnitPriceCents - value;
+  else if (type === "fixed_markup") result = baseUnitPriceCents + value;
+  else if (type === "percentage_discount")
+    result = Math.round((baseUnitPriceCents * (10000 - value)) / 10000);
+  else result = Math.round((baseUnitPriceCents * (10000 + value)) / 10000);
+  if (!Number.isSafeInteger(result)) throw new Error("ADJUSTMENT_VALUE");
+  return result;
+}
+
+export const saleCartLineSchema = z
+  .object({
+    productId: z.number().int().positive(),
+    quantity: z.number().int().positive().max(100000),
+    unitBarcodes: z.array(barcodeValueSchema).max(1000).optional(),
+    serializedUnits: z
+      .array(
+        z.object({
+          id: z.number().int().positive(),
+          barcode: barcodeValueSchema,
+        }),
+      )
+      .max(1000)
+      .optional(),
+    finalUnitPriceCents: z.number().int().positive().optional(),
+    priceAdjustmentType: z.enum(priceAdjustmentTypes).optional(),
+    priceAdjustmentValue: z
+      .number()
+      .int()
+      .min(0)
+      .max(2_000_000_000)
+      .optional(),
+    priceAdjustmentReason: z.string().trim().min(3).max(300).optional(),
+  })
+  .superRefine((line, ctx) => {
+    const fields = [
+      line.finalUnitPriceCents,
+      line.priceAdjustmentType,
+      line.priceAdjustmentValue,
+      line.priceAdjustmentReason,
+    ];
+    const hasAny = fields.some((value) => value !== undefined);
+    const hasAll = fields.every((value) => value !== undefined);
+    if (hasAny && !hasAll)
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Les informations de modification du prix sont incomplètes.",
+      });
+    if (
+      line.priceAdjustmentType === "percentage_discount" &&
+      line.priceAdjustmentValue !== undefined &&
+      line.priceAdjustmentValue >= 10000
+    )
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "La remise en pourcentage doit être inférieure à 100 %.",
+        path: ["priceAdjustmentValue"],
+      });
+    if (
+      line.priceAdjustmentType?.includes("percentage") &&
+      line.priceAdjustmentValue !== undefined &&
+      line.priceAdjustmentValue > 1_000_000
+    )
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Le pourcentage saisi est trop élevé.",
+        path: ["priceAdjustmentValue"],
+      });
+  });
 export const saleCreateSchema = z.object({
   customerId: z.number().int().positive().optional().nullable(),
   items: z.array(saleCartLineSchema).min(1).max(200),
@@ -461,6 +547,21 @@ export const reportFiltersSchema = paginationSchema.extend({
   category: z.string().trim().max(100).optional(),
   paymentSource: z.enum(["cash_register", "external_cash"]).optional(),
 });
+export const topProductsFiltersSchema = z
+  .object({
+    period: z.enum(["today", "7d", "30d", "month", "custom"]).default("30d"),
+    startDate: z.string().date().optional(),
+    endDate: z.string().date().optional(),
+    limit: z.coerce.number().int().min(1).max(50).default(10),
+  })
+  .superRefine((value, ctx) => {
+    if (value.period === "custom" && (!value.startDate || !value.endDate))
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Une date de début et une date de fin sont requises.",
+      });
+  });
+
 export const settingsUpdateSchema = z.object({
   shopName: z.string().trim().min(1).max(120),
   phone: z.string().trim().max(40).nullable(),
@@ -479,7 +580,7 @@ export const settingsUpdateSchema = z.object({
   showQrOnLabel: z.boolean(),
   showPriceOnLabel: z.boolean(),
   labelSize: z.enum(["40x30", "50x30", "A4"]),
-  backupRetention: z.number().int().min(1).max(365),
+  backupRetention: z.number().int().min(1).max(365).optional(),
   sessionTimeoutMinutes: z.number().int().min(15).max(10080),
 });
 export const backupRestoreSchema = z.object({

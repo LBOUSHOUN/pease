@@ -4,6 +4,7 @@ import type {
   Customer,
   CustomerCreditListResponse,
   CustomerListResponse,
+  PriceAdjustmentType,
   ProductListResponse,
   ProductListRow,
   ProductLookup,
@@ -24,6 +25,8 @@ import { enqueueGlobalScan, globalScanQueue } from "./global-scanner";
 import {
   addCartProduct,
   addSerializedCartUnit,
+  calculateCartPriceAdjustment,
+  cartLineUnitPrice,
   CartLine,
   DENOMINATIONS,
   denominationTotal,
@@ -873,8 +876,35 @@ export function CustomerPayment() {
   );
 }
 
+interface PriceEditorState {
+  productId: number;
+  type: PriceAdjustmentType;
+  value: string;
+  reason: string;
+  customReason: string;
+}
+
+const priceAdjustmentLabels: Record<PriceAdjustmentType, string> = {
+  final_unit_price: "Prix unitaire final",
+  fixed_discount: "Remise fixe",
+  percentage_discount: "Remise en pourcentage",
+  fixed_markup: "Majoration fixe",
+  percentage_markup: "Majoration en pourcentage",
+};
+const priceAdjustmentReasons = [
+  "Remise client",
+  "Client fidèle",
+  "Promotion exceptionnelle",
+  "Produit légèrement endommagé",
+  "Négociation commerciale",
+  "Correction de prix",
+  "Autre",
+] as const;
+
 export function PosPage({ user }: { user: SafeUser }) {
   const [cart, setCart] = useState<CartLine[]>([]),
+    [priceEditor, setPriceEditor] = useState<PriceEditorState>(),
+    [priceError, setPriceError] = useState(""),
     [query, setQuery] = useState(""),
     [results, setResults] = useState<ProductListRow[]>([]),
     [customers, setCustomers] = useState<Customer[]>([]),
@@ -1087,6 +1117,10 @@ export function PosPage({ user }: { user: SafeUser }) {
   }, []);
   const checkout = async () => {
     if (checkoutLock.current || !cart.length) return;
+    if (offline && cart.some((line) => line.priceAdjustment))
+      return setError(
+        "La modification manuelle du prix nécessite une connexion au serveur.",
+      );
     if (offline && mode !== "cash")
       return setError("Le crédit et le partiel sont indisponibles hors ligne. Passez en mode comptant.");
     if ((mode === "credit" || mode === "partial") && !customerId)
@@ -1103,6 +1137,10 @@ export function PosPage({ user }: { user: SafeUser }) {
           productId: x.product.id,
           quantity: x.quantity,
           unitBarcodes: x.unitBarcodes,
+          finalUnitPriceCents: x.priceAdjustment?.finalUnitPriceCents,
+          priceAdjustmentType: x.priceAdjustment?.type,
+          priceAdjustmentValue: x.priceAdjustment?.value,
+          priceAdjustmentReason: x.priceAdjustment?.reason,
         })),
         paymentMode: mode,
         cashPaidCents: mode === "partial" ? cashCents : 0,
@@ -1203,6 +1241,198 @@ export function PosPage({ user }: { user: SafeUser }) {
           Voir et imprimer le reçu
         </button>
       )}
+      {priceEditor && (() => {
+        const line = cart.find(
+          (item) => item.product.id === priceEditor.productId,
+        );
+        if (!line) return null;
+        const reason =
+          priceEditor.reason === "Autre"
+            ? priceEditor.customReason
+            : priceEditor.reason;
+        let preview: ReturnType<typeof calculateCartPriceAdjustment> | undefined;
+        try {
+          const rawValue = priceEditor.value.trim().replace(",", ".");
+          const value = priceEditor.type.includes("percentage")
+            ? Math.round(Number(rawValue) * 100)
+            : madToCents(rawValue);
+          if (!Number.isFinite(value) || value < 0) throw new Error("Valeur invalide.");
+          preview = calculateCartPriceAdjustment(
+            line.product.sellingPriceCents,
+            priceEditor.type,
+            value,
+            reason,
+          );
+        } catch {
+          preview = undefined;
+        }
+        const belowCost =
+          preview &&
+          Number(line.product.purchasePriceCents ?? 0) > 0 &&
+          preview.finalUnitPriceCents < Number(line.product.purchasePriceCents);
+        return (
+          <div
+            className="scanner-unknown"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="price-editor-title"
+          >
+            <div className="section-card" data-scanner-blocking="true">
+              <h2 id="price-editor-title">Modifier le prix</h2>
+              <p><b>{line.product.name}</b></p>
+              <dl className="details">
+                <dt>Prix normal</dt>
+                <dd>{centsToMad(line.product.sellingPriceCents)}</dd>
+                <dt>Quantité</dt>
+                <dd>{line.quantity}</dd>
+                <dt>Prix appliqué actuellement</dt>
+                <dd>{centsToMad(cartLineUnitPrice(line))}</dd>
+              </dl>
+              <label>
+                Mode de modification
+                <select
+                  value={priceEditor.type}
+                  onChange={(event) =>
+                    setPriceEditor({
+                      ...priceEditor,
+                      type: event.target.value as PriceAdjustmentType,
+                      value: "",
+                    })
+                  }
+                >
+                  {Object.entries(priceAdjustmentLabels).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                {priceEditor.type.includes("percentage")
+                  ? "Pourcentage (%)"
+                  : priceEditor.type === "final_unit_price"
+                    ? "Nouveau prix unitaire (MAD)"
+                    : "Montant (MAD)"}
+                <input
+                  type="number"
+                  min="0"
+                  max={
+                    priceEditor.type === "percentage_discount"
+                      ? "99.99"
+                      : priceEditor.type === "percentage_markup"
+                        ? "10000"
+                        : undefined
+                  }
+                  step="0.01"
+                  value={priceEditor.value}
+                  inputMode="decimal"
+                  autoFocus
+                  onChange={(event) =>
+                    setPriceEditor({ ...priceEditor, value: event.target.value })
+                  }
+                />
+              </label>
+              <label>
+                Raison
+                <select
+                  value={priceEditor.reason}
+                  onChange={(event) =>
+                    setPriceEditor({ ...priceEditor, reason: event.target.value })
+                  }
+                >
+                  {priceAdjustmentReasons.map((value) => (
+                    <option key={value}>{value}</option>
+                  ))}
+                </select>
+              </label>
+              {priceEditor.reason === "Autre" && (
+                <label>
+                  Explication
+                  <textarea
+                    value={priceEditor.customReason}
+                    onChange={(event) =>
+                      setPriceEditor({
+                        ...priceEditor,
+                        customReason: event.target.value,
+                      })
+                    }
+                  />
+                </label>
+              )}
+              {preview && (
+                <div className="notice">
+                  Nouveau prix : <b>{centsToMad(preview.finalUnitPriceCents)}</b><br />
+                  Total de la ligne : {centsToMad(preview.finalUnitPriceCents * line.quantity)}<br />
+                  Différence unitaire : {centsToMad(preview.finalUnitPriceCents - line.product.sellingPriceCents)}
+                </div>
+              )}
+              {belowCost && (
+                <div className="error">
+                  Le prix final est inférieur au prix d’achat.
+                  {!has(user, "sales.sell_below_cost") &&
+                    " Une autorisation supplémentaire est requise."}
+                </div>
+              )}
+              <ErrorBox value={priceError} />
+              <div className="inline-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setPriceEditor(undefined)}
+                >
+                  Annuler
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    offline ||
+                    !preview ||
+                    Boolean(belowCost && !has(user, "sales.sell_below_cost"))
+                  }
+                  onClick={() => {
+                    try {
+                      const rawValue = priceEditor.value.trim().replace(",", ".");
+                      const value = priceEditor.type.includes("percentage")
+                        ? Math.round(Number(rawValue) * 100)
+                        : madToCents(rawValue);
+                      const adjustment = calculateCartPriceAdjustment(
+                        line.product.sellingPriceCents,
+                        priceEditor.type,
+                        value,
+                        reason,
+                      );
+                      if (
+                        Number(line.product.purchasePriceCents ?? 0) > 0 &&
+                        adjustment.finalUnitPriceCents <
+                          Number(line.product.purchasePriceCents) &&
+                        !has(user, "sales.sell_below_cost")
+                      )
+                        throw new Error(
+                          "La vente sous le prix d’achat nécessite une autorisation supplémentaire.",
+                        );
+                      setCart(
+                        cart.map((item) =>
+                          item.product.id === line.product.id
+                            ? { ...item, priceAdjustment: adjustment }
+                            : item,
+                        ),
+                      );
+                      setPriceEditor(undefined);
+                      setPriceError("");
+                    } catch (reasonValue) {
+                      setPriceError(
+                        reasonValue instanceof Error
+                          ? reasonValue.message
+                          : "Modification du prix invalide.",
+                      );
+                    }
+                  }}
+                >
+                  Appliquer
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       <div className="pos-grid">
         <section>
           <label>
@@ -1258,9 +1488,72 @@ export function PosPage({ user }: { user: SafeUser }) {
                 {line.unitBarcodes?.length ? (
                   <small className="serialized-cart-units">{line.unitBarcodes.join(" · ")}</small>
                 ) : null}
-                <b>
-                  {centsToMad(line.product.sellingPriceCents * line.quantity)}
-                </b>
+                <div>
+                  {line.priceAdjustment && (
+                    <small>
+                      Prix normal : {centsToMad(line.product.sellingPriceCents)}
+                    </small>
+                  )}
+                  <b>{centsToMad(cartLineUnitPrice(line) * line.quantity)}</b>
+                  <small>
+                    {centsToMad(cartLineUnitPrice(line))} × {line.quantity}
+                  </small>
+                </div>
+                {has(user, "sales.adjust_price") && (
+                  <div className="inline-actions">
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={offline}
+                      onClick={() => {
+                        if (offline) {
+                          setError(
+                            "La modification manuelle du prix nécessite une connexion au serveur.",
+                          );
+                          return;
+                        }
+                        setPriceError("");
+                        const existingReason =
+                          line.priceAdjustment?.reason ??
+                          "Négociation commerciale";
+                        const knownReason =
+                          existingReason !== "Autre" &&
+                          priceAdjustmentReasons.includes(
+                            existingReason as (typeof priceAdjustmentReasons)[number],
+                          );
+                        const existingValue = line.priceAdjustment
+                          ? (line.priceAdjustment.value / 100).toFixed(2)
+                          : (line.product.sellingPriceCents / 100).toFixed(2);
+                        setPriceEditor({
+                          productId: line.product.id,
+                          type: line.priceAdjustment?.type ?? "final_unit_price",
+                          value: existingValue,
+                          reason: knownReason ? existingReason : "Autre",
+                          customReason: knownReason ? "" : existingReason,
+                        });
+                      }}
+                    >
+                      Modifier le prix
+                    </button>
+                    {line.priceAdjustment && (
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() =>
+                          setCart(
+                            cart.map((item) =>
+                              item.product.id === line.product.id
+                                ? { ...item, priceAdjustment: undefined }
+                                : item,
+                            ),
+                          )
+                        }
+                      >
+                        Réinitialiser le prix
+                      </button>
+                    )}
+                  </div>
+                )}
                 <button
                   className="secondary"
                   onClick={() =>
@@ -1357,9 +1650,12 @@ export function SalesPage() {
     const c = new AbortController(),
       p = new URLSearchParams({ search: query, page: String(page) });
     if (mode) p.set("paymentMode", mode);
-    request<SaleListResponse>(`/sales?${p}`, { signal: c.signal }).then(
-      setData,
-    );
+    void request<SaleListResponse>(`/sales?${p}`, { signal: c.signal })
+      .then(setData)
+      .catch((error: unknown) => {
+        if (error instanceof Error && error.name === "AbortError") return;
+        console.error(error);
+      });
     return () => c.abort();
   }, [query, mode, page]);
   return (
@@ -1491,9 +1787,24 @@ export function SaleDetails() {
               <tbody>
                 {sale.items.map((x) => (
                   <tr key={x.id}>
-                    <td>{x.productName}</td>
+                    <td>
+                      {x.productName}
+                      {x.priceAdjustmentType && (
+                        <small>
+                          {x.priceAdjustmentReason || "Prix ajusté"}
+                        </small>
+                      )}
+                    </td>
                     <td>{x.quantity}</td>
-                    <td>{centsToMad(x.unitPriceCents)}</td>
+                    <td>
+                      {x.priceAdjustmentType &&
+                        x.baseUnitPriceCents !== x.unitPriceCents && (
+                          <small>
+                            Prix normal : {centsToMad(x.baseUnitPriceCents)}
+                          </small>
+                        )}
+                      {centsToMad(x.unitPriceCents)}
+                    </td>
                     <td>{centsToMad(x.lineTotalCents)}</td>
                   </tr>
                 ))}
@@ -1503,6 +1814,7 @@ export function SaleDetails() {
           <dl className="details">
             <dt>Sous-total</dt><dd>{centsToMad(sale.subtotalCents)}</dd>
             {sale.discountCents > 0 && <><dt>Remise</dt><dd>- {centsToMad(sale.discountCents)}</dd></>}
+            {sale.markupCents > 0 && <><dt>Majoration</dt><dd>+ {centsToMad(sale.markupCents)}</dd></>}
             <dt>Total</dt>
             <dd>
               <b>{centsToMad(sale.totalCents)}</b>
