@@ -175,4 +175,71 @@ export async function request<T>(
   return parsed as T;
 }
 
+
+function responseFilename(response: Response, fallback: string) {
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const utf8 = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  const basic = disposition.match(/filename="?([^";]+)"?/i);
+  const encoded = utf8?.[1];
+
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded);
+    } catch {
+      return encoded;
+    }
+  }
+
+  return basic?.[1] ?? fallback;
+}
+
+export async function downloadFile(path: string, fallbackFilename: string) {
+  const headers = new Headers();
+  const native = isNativeDesktop();
+
+  if (native) {
+    headers.set("x-maktaba-client", "tauri-desktop");
+    const token = await desktopAuthorization();
+    if (token) headers.set("authorization", `Bearer ${token}`);
+  }
+
+  const transport = native ? nativeFetch : fetch;
+  const response = await transport(buildApiUrl(path), {
+    headers,
+    ...(native ? {} : { credentials: "include" as const }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    let parsed: unknown;
+
+    if (text) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = undefined;
+      }
+    }
+
+    throw new ApiFailure(
+      normalizedError(response.status, parsed),
+      response.status,
+    );
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = objectUrl;
+  link.download = responseFilename(response, fallbackFilename);
+  link.style.display = "none";
+
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
+}
+
 export type AuthResponse = { user: SafeUser; desktopSession?: { token: string; expiresAt: string } };

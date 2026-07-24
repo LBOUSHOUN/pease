@@ -12,7 +12,7 @@ import type {
   ReportResponse,
   SafeUser,
 } from "@maktaba/shared-types";
-import { request } from "./api";
+import { downloadFile, request } from "./api";
 import { centsToMad } from "./money";
 
 const has = (u: SafeUser, p: string) => u.permissions.includes(p),
@@ -474,7 +474,7 @@ export function ReportsHub({ user }: { user: SafeUser }) {
 const human = (key: string) =>
   key.replaceAll("_", " ").replace(/cents$/, "MAD");
 export function ReportPage({ kind, user }: { kind: string; user: SafeUser }) {
-  const [preset, setPreset] = useState("today"),
+  const [preset, setPreset] = useState("this_month"),
     [start, setStart] = useState(""),
     [end, setEnd] = useState(""),
     [search, setSearch] = useState(""),
@@ -501,12 +501,30 @@ export function ReportPage({ kind, user }: { kind: string; user: SafeUser }) {
       });
     return () => c.abort();
   }, [kind, preset, start, end, q]);
-  const exportCsv = () => {
+  const exportCsv = async () => {
     const params = new URLSearchParams({ preset });
     if (preset === "custom" && start) params.set("startDate", start);
     if (preset === "custom" && end) params.set("endDate", end);
     if (q.trim()) params.set("search", q.trim());
-    window.location.assign(`/api/exports/${kind}.csv?${params}`);
+
+    try {
+      await downloadFile(
+        `/exports/${kind}.csv?${params}`,
+        `maktaba-${kind}.csv`,
+      );
+      setError("");
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+  const printReport = () => {
+    const cleanup = () => {
+      document.body.classList.remove("report-print-mode");
+    };
+
+    document.body.classList.add("report-print-mode");
+    window.addEventListener("afterprint", cleanup, { once: true });
+    window.print();
   };
   const label = reportKinds.find((x) => x.id === kind)?.label ?? kind,
     headers = data?.rows[0] ? Object.keys(data.rows[0]) : [];
@@ -518,7 +536,7 @@ export function ReportPage({ kind, user }: { kind: string; user: SafeUser }) {
           {has(user, "exports.create") && (
             <button onClick={exportCsv}>Exporter CSV</button>
           )}{" "}
-          <button onClick={() => window.print()}>Imprimer</button>
+          <button onClick={printReport}>Imprimer</button>
         </div>
       </div>
       {kind === "profit" && (
@@ -566,9 +584,12 @@ export function ReportPage({ kind, user }: { kind: string; user: SafeUser }) {
           ))}
       </div>
       {data?.rows.length === 0 ? (
-        <p>Aucune donnée pour cette période.</p>
+        <p className="empty-state report-empty-state">
+          Aucune donnée pour cette période. Essayez « Ce mois » ou choisissez
+          une période personnalisée.
+        </p>
       ) : (
-        <div className="table-scroll">
+        <div className="table table-scroll report-table">
           <table>
             <thead>
               <tr>
@@ -833,11 +854,10 @@ export function LabelBarcode({ code }: { code: string }) {
     try {
       JsBarcode(ref.current, code, {
         format: labelBarcodeFormat(code),
-        displayValue: true,
-        text: code,
-        width: 2,
-        height: 42,
-        margin: 8,
+        displayValue: false,
+        width: 1,
+        height: 48,
+        margin: 0,
         lineColor: "#000000",
         background: "#ffffff",
       });
@@ -858,6 +878,11 @@ export function ProductLabel() {
     [quantity, setQuantity] = useState(1),
     [format, setFormat] = useState<"thermal" | "a4">(() =>
       window.localStorage.getItem("maktaba-label-format") === "a4" ? "a4" : "thermal",
+    ),
+    [labelSize, setLabelSize] = useState<"40x30" | "50x30">(() =>
+      window.localStorage.getItem("maktaba-label-size") === "50x30"
+        ? "50x30"
+        : "40x30",
     ),
     [error, setError] = useState("");
   useEffect(() => {
@@ -884,7 +909,20 @@ export function ProductLabel() {
             <option value="thermal">Étiquette thermique individuelle</option>
             <option value="a4">Planche d'étiquettes A4</option>
           </select>
-          <select value={[1, 6, 12, 24].includes(quantity) ? String(quantity) : "custom"} onChange={(e) => {
+                    <select
+            value={labelSize}
+            aria-label="Taille de l'etiquette"
+            disabled={format === "a4"}
+            onChange={(e) => {
+              const next = e.target.value as "40x30" | "50x30";
+              setLabelSize(next);
+              window.localStorage.setItem("maktaba-label-size", next);
+            }}
+          >
+            <option value="40x30">40 × 30 mm</option>
+            <option value="50x30">50 × 30 mm</option>
+          </select>
+<select value={[1, 6, 12, 24].includes(quantity) ? String(quantity) : "custom"} onChange={(e) => {
             if (e.target.value !== "custom") setQuantity(Number(e.target.value));
           }} aria-label="Quantité d'étiquettes">
             {[1, 6, 12, 24].map((value) => <option key={value} value={value}>{value}</option>)}
@@ -904,17 +942,36 @@ export function ProductLabel() {
       </div>
       <ErrorBox value={error} />
       {product && settings && (
-        <div className={`labels label-format-${format} size-${settings.labelSize.replace("x", "-")}`}>
-          {Array.from({ length: quantity }, (_, i) => (
-            <article className="product-label" key={i}>
-              <strong>{settings.shopName || "Double Library"}</strong>
-              <span>{product.name}</span>
-              <LabelBarcode code={product.manufacturerBarcode || product.internalBarcode} />
-              <code className="label-barcode-value">{product.manufacturerBarcode || product.internalBarcode}</code>
-              <b>{centsToMad(product.sellingPriceCents)}</b>
-            </article>
-          ))}
-        </div>
+        <>
+          <style>
+            {format === "a4"
+              ? "@page { size: A4; margin: 8mm; }"
+              : `@page { size: ${
+                  labelSize === "50x30"
+                    ? "50mm 30mm"
+                    : "40mm 30mm"
+                }; margin: 0; }`}
+          </style>
+
+          <div
+            className={`labels label-format-${format} size-${labelSize.replace(
+              "x",
+              "-",
+            )}`}
+          >
+            {Array.from({ length: quantity }, (_, i) => (
+              <article className="product-label" key={i}>
+                <strong>{settings.shopName || "Double Library"}</strong>
+                <span>{product.name}</span>
+                <LabelBarcode code={product.internalBarcode} />
+                <code className="label-barcode-value">
+                  {product.internalBarcode}
+                </code>
+                <b>{centsToMad(product.sellingPriceCents)}</b>
+              </article>
+            ))}
+          </div>
+        </>
       )}
     </main>
   );
