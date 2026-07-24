@@ -799,7 +799,7 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
           <span className="inline-actions">
             <button type="button" className="secondary" onClick={() => barcodeInput.current?.focus()}>Scanner</button>
             <button type="button" className="secondary barcode-generate-action" disabled={generating || busy || offline || form.productType === "service"} onClick={generateBarcode}>{generating ? "Génération…" : "Générer"}</button>
-            {user.permissions.includes("labels.print") && <button type="button" className="secondary barcode-print-action" disabled={!edit || !id || !form.name.trim() || !form.manufacturerBarcode.trim()} onClick={() => id && nav(`/products/${id}/label`)}>Imprimer l’étiquette</button>}
+            {user.permissions.includes("labels.print") && <button type="button" className="secondary barcode-print-action" disabled={!edit || !id || !form.name.trim()} onClick={() => id && nav(`/products/${id}/label`)}>Imprimer l’étiquette</button>}
           </span>
           {!edit && user.permissions.includes("labels.print") && <small>Enregistrez d’abord le produit pour imprimer l’étiquette.</small>}
           {offline && <small className="field-error">La génération d’un code-barres nécessite une connexion au serveur.</small>}
@@ -915,16 +915,47 @@ export function ProductDetails({ user, offline = false }: { user: SafeUser; offl
     [moves, setMoves] = useState<StockMovementListResponse>(),
     [error, setError] = useState(""), [refresh, setRefresh] = useState(0);
   useEffect(() => {
-    const c = new AbortController();
-    request<ProductDetail>(`/products/${id}`, { signal: c.signal })
-      .then(setX)
-      .catch((e) => setError(e.message));
-    if (has(user, "stock.view"))
+    const controller = new AbortController();
+    const isAbort = (reason: unknown) =>
+      reason instanceof Error &&
+      (reason.name === "AbortError" ||
+        reason.message.toLowerCase().includes("aborted"));
+
+    request<ProductDetail>(`/products/${id}`, {
+      signal: controller.signal,
+    })
+      .then((product) => {
+        setX(product);
+        setError("");
+      })
+      .catch((reason) => {
+        if (!isAbort(reason)) {
+          setError(
+            reason instanceof Error ? reason.message : "Produit introuvable.",
+          );
+        }
+      });
+
+    if (has(user, "stock.view")) {
       request<StockMovementListResponse>(
         `/stock/movements?productId=${id}&pageSize=10`,
-        { signal: c.signal },
-      ).then(setMoves);
-    return () => c.abort();
+        { signal: controller.signal },
+      )
+        .then(setMoves)
+        .catch((reason) => {
+          if (!isAbort(reason)) {
+            setError(
+              reason instanceof Error
+                ? reason.message
+                : "Impossible de charger les mouvements de stock.",
+            );
+          }
+        });
+    } else {
+      setMoves(undefined);
+    }
+
+    return () => controller.abort();
   }, [id, user, refresh]);
   if (error)
     return (

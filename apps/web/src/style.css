@@ -730,3 +730,414 @@ button, .button { min-height: 42px; display: inline-flex; align-items: center; j
   gap: .35rem;
   margin-bottom: .75rem;
 }
+
+
+/* Label print reliability fix */
+
+.labels-page .product-label {
+  box-sizing: border-box;
+  justify-content: flex-start;
+  gap: 0.25mm;
+  padding: 0.8mm 1mm;
+  background: #fff;
+  color: #000;
+}
+
+.labels-page .product-label > strong {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 7pt;
+  line-height: 1.05;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.labels-page .product-label > span {
+  display: block;
+  max-width: 100%;
+  max-height: 4.2mm;
+  overflow: hidden;
+  font-size: 7pt;
+  line-height: 1.05;
+}
+
+.labels-page .product-label .label-linear-barcode {
+  display: block;
+  flex: 0 0 auto;
+  height: 11mm !important;
+  max-height: none !important;
+  margin: 0.3mm auto 0 !important;
+  overflow: visible;
+}
+
+.labels-page .size-40-30 .label-linear-barcode {
+  width: 34mm !important;
+  max-width: 34mm !important;
+}
+
+.labels-page .size-50-30 .label-linear-barcode {
+  width: 44mm !important;
+  max-width: 44mm !important;
+}
+
+.labels-page .label-barcode-value {
+  max-width: 100%;
+  overflow: hidden;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 6.5pt;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+
+.labels-page .product-label > b {
+  font-size: 9pt;
+  line-height: 1;
+}
+
+@media print {
+  html,
+  body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
+  }
+
+  .labels-page,
+  .labels-page .page {
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .labels-page .label-format-thermal {
+    position: static !important;
+    inset: auto !important;
+    display: block !important;
+    width: auto !important;
+    gap: 0 !important;
+  }
+
+  .labels-page .label-format-thermal .product-label {
+    margin: 0 !important;
+    border: 0 !important;
+    break-after: page;
+    page-break-after: always;
+  }
+
+  .labels-page .label-format-thermal .product-label:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+}
+
+
+/* Unified platform UI v2 */
+
+.page:not(.labels-page) {
+  width: 100%;
+  max-width: none;
+}
+
+.page:not(.labels-page) > .title,
+.page:not(.labels-page) > .page-header,
+.page:not(.labels-page) > .section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0 0 1rem;
+}
+
+.page:not(.labels-page) > .title h1,
+.page:not(.labels-page) > .page-header h1,
+.page:not(.labels-page) > .section-header h1 {
+  margin: 0;
+}
+
+.page:not(.labels-page) .filters,
+.page:not(.labels-page) .scanner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+  padding: 0.85rem;
+  border: 1px solid var(--color-border, #dce5e1);
+  border-radius: var(--radius-md, 12px);
+  background: var(--color-surface, #fff);
+  box-shadow: var(--shadow-sm, 0 6px 18px rgba(23, 35, 31, 0.06));
+}
+
+.page:not(.labels-page) .filters input,
+.page:not(.labels-page) .filters select,
+.page:not(.labels-page) .filters textarea,
+.page:not(.labels-page) .scanner input,
+.page:not(.labels-page) .scanner select {
+  min-height: 44px;
+  margin: 0;
+  border: 1px solid var(--color-border, #dce5e1);
+  border-radius: var(--radius-sm, 8px);
+  background: #fff;
+}
+
+.page:not(.labels-page) .table,
+.page:not(.labels-page) .table-scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  margin-bottom: 1rem;
+  border: 1px solid var(--color-border, #dce5e1);
+  border-radius: var(--radius-md, 12px);
+  background: var(--color-surface, #fff);
+  box-shadow: var(--shadow-sm, 0 6px 18px rgba(23, 35, 31, 0.06));
+}
+
+.page:not(.labels-page) table,
+.page:not(.labels-page) .data-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--color-surface, #fff);
+  font-variant-numeric: tabular-nums;
+}
+
+.page:not(.labels-page) table:not(.receipt-document table) {
+  border: 1px solid var(--color-border, #dce5e1);
+  border-radius: var(--radius-md, 12px);
+  overflow: hidden;
+}
+
+.page:not(.labels-page) .table table,
+.page:not(.labels-page) .table-scroll table {
+  border: 0;
+  border-radius: 0;
+}
+
+.page:not(.labels-page) table th,
+.page:not(.labels-page) table td,
+.page:not(.labels-page) .data-table th,
+.page:not(.labels-page) .data-table td {
+  padding: 0.72rem 0.8rem;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid #e9efec;
+}
+
+.page:not(.labels-page) table th,
+.page:not(.labels-page) .data-table th {
+  color: var(--color-muted, #60736c);
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0.015em;
+  background: #f7faf8;
+  white-space: nowrap;
+}
+
+.page:not(.labels-page) table tbody tr:last-child td,
+.page:not(.labels-page) .data-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.page:not(.labels-page) table tbody tr:hover td,
+.page:not(.labels-page) .data-table tbody tr:hover td {
+  background: #f8fbfa;
+}
+
+.page:not(.labels-page) table a {
+  font-weight: 650;
+}
+
+.page:not(.labels-page) .card,
+.page:not(.labels-page) .section-card,
+.page:not(.labels-page) .metric-card,
+.page:not(.labels-page) .details {
+  border: 1px solid var(--color-border, #dce5e1);
+  border-radius: var(--radius-md, 12px);
+  background: var(--color-surface, #fff);
+  box-shadow: var(--shadow-sm, 0 6px 18px rgba(23, 35, 31, 0.06));
+}
+
+.page:not(.labels-page) .empty,
+.page:not(.labels-page) .empty-state,
+.page:not(.labels-page) .loading-state {
+  margin: 1rem 0;
+  padding: 1.15rem;
+  border: 1px dashed #c7d5cf;
+  border-radius: var(--radius-md, 12px);
+  color: var(--color-muted, #60736c);
+  text-align: center;
+  background: #fafcfb;
+}
+
+.page:not(.labels-page) .metrics {
+  align-items: stretch;
+}
+
+.page:not(.labels-page) .metrics .card {
+  min-height: 104px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.page:not(.labels-page) .metrics .card small {
+  color: var(--color-muted, #60736c);
+  font-weight: 650;
+}
+
+.page:not(.labels-page) .metrics .card b {
+  font-size: clamp(1.1rem, 1.8vw, 1.5rem);
+}
+
+.report-table,
+.report-empty-state {
+  margin-top: 1rem;
+}
+
+@media (max-width: 800px) {
+  .page:not(.labels-page) > .title,
+  .page:not(.labels-page) > .page-header,
+  .page:not(.labels-page) > .section-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .page:not(.labels-page) .filters > *,
+  .page:not(.labels-page) .scanner > * {
+    width: 100% !important;
+  }
+
+  .page:not(.labels-page) .table table,
+  .page:not(.labels-page) .table-scroll table,
+  .page:not(.labels-page) .data-table {
+    min-width: 720px;
+  }
+}
+
+@media print {
+  .print-sheet .table,
+  .print-sheet .table-scroll {
+    overflow: visible;
+    border: 0;
+    box-shadow: none;
+  }
+}
+
+
+/* Report print isolation fix */
+@media print {
+  body.report-print-mode {
+    background: #fff !important;
+  }
+
+  body.report-print-mode * {
+    visibility: hidden !important;
+  }
+
+  body.report-print-mode #root,
+  body.report-print-mode #root > *,
+  body.report-print-mode .app-shell,
+  body.report-print-mode .shell,
+  body.report-print-mode .app-content,
+  body.report-print-mode .main-content,
+  body.report-print-mode main {
+    display: block !important;
+    width: 100% !important;
+    max-width: none !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  body.report-print-mode .print-sheet,
+  body.report-print-mode .print-sheet * {
+    visibility: visible !important;
+  }
+
+  body.report-print-mode .print-sheet {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    color: #000 !important;
+    background: #fff !important;
+    overflow: visible !important;
+  }
+
+  body.report-print-mode .print-sheet .title {
+    display: block !important;
+    margin: 0 0 12px !important;
+  }
+
+  body.report-print-mode .print-sheet .title > div,
+  body.report-print-mode .print-sheet .filters {
+    display: none !important;
+  }
+
+  body.report-print-mode .print-sheet .metrics {
+    display: grid !important;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+    margin: 0 0 12px !important;
+  }
+
+  body.report-print-mode .print-sheet .metrics .card {
+    min-height: 0 !important;
+    padding: 8px !important;
+    border: 1px solid #bbb !important;
+    box-shadow: none !important;
+    break-inside: avoid !important;
+  }
+
+  body.report-print-mode .print-sheet .table,
+  body.report-print-mode .print-sheet .table-scroll {
+    display: block !important;
+    width: 100% !important;
+    overflow: visible !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+
+  body.report-print-mode .print-sheet table {
+    display: table !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    border-collapse: collapse !important;
+    color: #000 !important;
+    background: #fff !important;
+  }
+
+  body.report-print-mode .print-sheet thead {
+    display: table-header-group !important;
+  }
+
+  body.report-print-mode .print-sheet tbody {
+    display: table-row-group !important;
+  }
+
+  body.report-print-mode .print-sheet tr {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  body.report-print-mode .print-sheet th,
+  body.report-print-mode .print-sheet td {
+    padding: 5px 6px !important;
+    border: 1px solid #bbb !important;
+    color: #000 !important;
+    background: #fff !important;
+    font-size: 10px !important;
+  }
+
+  body.report-print-mode .print-sheet a {
+    color: #000 !important;
+    text-decoration: none !important;
+  }
+}

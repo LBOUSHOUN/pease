@@ -89,28 +89,30 @@ export function SuppliersPage({ user }: { user: SafeUser }) {
           <option value="inactive">Inactifs</option>
         </select>
       </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Nom</th>
-            <th>Contact</th>
-            <th>Dette</th>
-            <th>État</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data?.rows.map((supplier) => (
-            <tr key={supplier.id}>
-              <td>
-                <Link to={`/suppliers/${supplier.id}`}>{supplier.name}</Link>
-              </td>
-              <td>{supplier.phone || supplier.email || "—"}</td>
-              <td>{centsToMad(supplier.currentDebtCents)}</td>
-              <td>{supplier.isActive ? "Actif" : "Inactif"}</td>
+      <div className="table">
+        <table>
+          <thead>
+            <tr>
+              <th>Nom</th>
+              <th>Contact</th>
+              <th>Dette</th>
+              <th>État</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {data?.rows.map((supplier) => (
+              <tr key={supplier.id}>
+                <td>
+                  <Link to={`/suppliers/${supplier.id}`}>{supplier.name}</Link>
+                </td>
+                <td>{supplier.phone || supplier.email || "—"}</td>
+                <td>{centsToMad(supplier.currentDebtCents)}</td>
+                <td>{supplier.isActive ? "Actif" : "Inactif"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </main>
   );
 }

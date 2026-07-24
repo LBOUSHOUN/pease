@@ -1,40 +1,39 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Double Library POS",
-  "version": "0.1.1",
-  "identifier": "com.pc.doublelibrary",
-  "build": {
-    "beforeDevCommand": "node -e \"process.exit(0)\"",
-    "devUrl": "http://127.0.0.1:5173",
-    "beforeBuildCommand": "npm --prefix ../../ run build --workspace=@maktaba/web",
-    "frontendDist": "../../web/dist"
-  },
-  "app": {
-    "windows": [
-      {
-        "title": "Double Library POS",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 900,
-        "minHeight": 600
-      }
-    ],
-    "security": {
-      "csp": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:3000 http://127.0.0.1:5173 ws://127.0.0.1:5173 https://pease-production.up.railway.app; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
-    }
-  },
-  "bundle": {
-    "active": true,
-    "targets": [
-      "nsis"
-    ],
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ]
-  }
+    "$schema":  "https://schema.tauri.app/config/2",
+    "productName":  "Double Library POS",
+    "version":  "0.1.4",
+    "identifier":  "com.pc.doublelibrary",
+    "build":  {
+                  "beforeDevCommand":  "node -e \"process.exit(0)\"",
+                  "devUrl":  "http://127.0.0.1:5173",
+                  "beforeBuildCommand":  "npm --prefix ../../ run build --workspace=@maktaba/web",
+                  "frontendDist":  "../../web/dist"
+              },
+    "app":  {
+                "windows":  [
+                                {
+                                    "title":  "Double Library POS",
+                                    "width":  1280,
+                                    "height":  800,
+                                    "minWidth":  900,
+                                    "minHeight":  600
+                                }
+                            ],
+                "security":  {
+                                 "csp":  "default-src \u0027self\u0027 data: blob:; script-src \u0027self\u0027 \u0027unsafe-inline\u0027; style-src \u0027self\u0027 \u0027unsafe-inline\u0027; img-src \u0027self\u0027 data: blob:; connect-src \u0027self\u0027 ipc: http://ipc.localhost http://127.0.0.1:3000 http://127.0.0.1:5173 ws://127.0.0.1:5173 https://pease-production.up.railway.app; font-src \u0027self\u0027 data:; object-src \u0027none\u0027; base-uri \u0027self\u0027; form-action \u0027self\u0027; frame-ancestors \u0027none\u0027"
+                             }
+            },
+    "bundle":  {
+                   "active":  true,
+                   "targets":  [
+                                   "nsis"
+                               ],
+                   "icon":  [
+                                "icons/32x32.png",
+                                "icons/128x128.png",
+                                "icons/128x128@2x.png",
+                                "icons/icon.icns",
+                                "icons/icon.ico"
+                            ]
+               }
 }
-

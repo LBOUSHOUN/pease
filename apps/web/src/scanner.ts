@@ -3,6 +3,8 @@ export type ScannerOptions = {
   minLength?: number;
   duplicateWindowMs?: number;
 };
+export const normalizeScannedCode = (value: string) =>
+  value.trim().replace(/^[,،;]+|[,،;]+$/g, "");
 export class ScannerBuffer {
   private value = "";
   private last = 0;
@@ -17,7 +19,7 @@ export class ScannerBuffer {
       min = this.options.minLength ?? 3,
       duplicate = this.options.duplicateWindowMs ?? 750;
     if (key === "Enter") {
-      const code = this.value;
+      const code = normalizeScannedCode(this.value);
       this.value = "";
       if (
         code.length >= min &&

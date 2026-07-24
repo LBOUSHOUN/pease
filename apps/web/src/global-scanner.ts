@@ -1,3 +1,4 @@
+import { normalizeScannedCode } from "./scanner";
 export type ScanSource = "usb" | "camera";
 export type QueuedScan = { barcode: string; source: ScanSource };
 export type ScanHandler = (scan: QueuedScan) => Promise<void>;
@@ -8,7 +9,7 @@ export class OrderedScanQueue {
   private draining = false;
 
   enqueue(barcode: string, source: ScanSource = "usb") {
-    const normalized = barcode.trim();
+    const normalized = normalizeScannedCode(barcode);
     if (normalized.length < 3) return false;
     this.pending.push({ barcode: normalized, source });
     void this.drain();
