@@ -16,7 +16,7 @@ import {
   useLocation,
   useNavigate,
 } from "react-router-dom";
-import type { ProductLookup, ProductUnitLookup, RegisterStatus, SafeUser } from "@maktaba/shared-types";
+import type { RegisterStatus, SafeUser } from "@maktaba/shared-types";
 import { request, AuthResponse, ApiFailure } from "./api";
 import { initializeAuth, OfflineColdStartError, resetAuthInitialization } from "./auth-bootstrap";
 import { singleFlight } from "./single-flight";
@@ -593,37 +593,18 @@ function Layout({
         return;
       }
       setScannerWarning("");
-      if (offline) {
-        enqueueGlobalScan(barcode);
-        if (loc.pathname !== "/pos") navigate("/pos");
-        return;
-      }
-      try {
-        let product;
-        try {
-          product = (await request<ProductLookup>(`/products/lookup/${encodeURIComponent(barcode)}`)).product;
-        } catch (lookupError) {
-          if (!(lookupError instanceof ApiFailure) || lookupError.status !== 404) throw lookupError;
-          product = (await request<ProductUnitLookup>(`/product-units/lookup/${encodeURIComponent(barcode)}`)).product;
-        }
-        if (!product.isActive) {
-          setScannerWarning("Ce produit est archivé et ne peut pas être vendu.");
-          return;
-        }
-        setUnknownBarcode("");
-        enqueueGlobalScan(barcode);
-        if (loc.pathname !== "/pos") navigate("/pos");
-      } catch (reason) {
-        if (reason instanceof ApiFailure && reason.status === 404) {
-          setUnknownBarcode(barcode);
-          return;
-        }
-        setScannerWarning(reason instanceof Error ? reason.message : "La recherche du produit a échoué.");
-      }
+      setUnknownBarcode("");
+      setScannerWarning("");
+      navigate("/pos");
+      enqueueGlobalScan(barcode);
     },
     { maxIntervalMs: 80, minLength: 3, duplicateWindowMs: 0 },
   );
-  useEffect(() => setMenu(false), [loc]);
+  useEffect(() => {
+    setMenu(false);
+    setUnknownBarcode("");
+    setScannerWarning("");
+  }, [loc.pathname]);
   useEffect(() => {
     if (!menu) return;
     const close = (event: KeyboardEvent) => {
