@@ -22,6 +22,7 @@ import { ApiFailure, request } from "./api";
 import { centsToMad, madToCents } from "./money";
 import CameraScanner from "./CameraScanner";
 import { enqueueGlobalScan, globalScanQueue } from "./global-scanner";
+import { normalizeScannedCode } from "./scanner";
 import {
   addCartProduct,
   addSerializedCartUnit,
@@ -1016,6 +1017,8 @@ export function PosPage({ user }: { user: SafeUser }) {
         setScannerState("Stock insuffisant");
         return setError("Stock insuffisant pour ce produit.");
       }
+    setQuery("");
+    setResults([]);
     setCart((value) => {
       const quantity = value.find((line) => line.product.id === product.id)?.quantity ?? 0;
       if (product.productType === "physical_product" && product.trackStock && quantity >= product.currentStock) {
@@ -1028,7 +1031,13 @@ export function PosPage({ user }: { user: SafeUser }) {
       return addCartProduct(value, product);
     });
   }, []);
-  const scan = useCallback(async (code: string) => {
+  const scan = useCallback(async (rawCode: string) => {
+    const code = normalizeScannedCode(rawCode);
+    if (code.length < 3) return;
+
+    setQuery("");
+    setResults([]);
+    setError("");
     setLastScannedCode(code);
     setScannerState("Recherche…");
     try {
@@ -1441,6 +1450,14 @@ export function PosPage({ user }: { user: SafeUser }) {
               data-pos-search
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                event.stopPropagation();
+                const code = normalizeScannedCode(event.currentTarget.value);
+                if (code.length < 3) return;
+                void scan(code);
+              }}
               placeholder="Produit, SKU ou code"
               autoFocus
             />

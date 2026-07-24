@@ -4,7 +4,8 @@ export type ScannerOptions = {
   duplicateWindowMs?: number;
 };
 export const normalizeScannedCode = (value: string) =>
-  value.trim().replace(/^[,،;]+|[,،;]+$/g, "");
+  value.trim().replace(/^[,\u060C;]+|[,\u060C;]+$/g, "");
+
 export class ScannerBuffer {
   private value = "";
   private last = 0;
