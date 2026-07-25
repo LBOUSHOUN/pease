@@ -18,22 +18,34 @@ const DESKTOP_TOKEN_SERVICE: &str = "com.pc.doublelibrary";
 const LEGACY_DESKTOP_TOKEN_SERVICES: [&str; 2] = ["com.pc.maktaba-pos", "com.maktaba.pos"];
 const DESKTOP_TOKEN_ACCOUNT: &str = "desktop-session";
 
+fn validate_desktop_session_token(token: &str) -> Result<(), String> {
+    if token.len() < 32
+        || token.len() > 512
+        || token.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err("invalid_token: Jeton de session invalide.".to_string());
+    }
+    Ok(())
+}
+
 fn desktop_token_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(DESKTOP_TOKEN_SERVICE, DESKTOP_TOKEN_ACCOUNT)
-        .map_err(|_| "Stockage sécurisé indisponible.".to_string())
+        .map_err(|_| "credential_manager_unavailable: Stockage sécurisé indisponible.".to_string())
 }
 #[tauri::command]
 fn save_desktop_session_token(token: String) -> Result<(), String> {
-    if token.len() != 43
-        || !token
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err("Jeton de session invalide.".to_string());
-    }
-    desktop_token_entry()?
+    validate_desktop_session_token(&token)?;
+    let entry = desktop_token_entry()?;
+    entry
         .set_password(&token)
-        .map_err(|_| "Enregistrement sécurisé impossible.".to_string())
+        .map_err(|_| "credential_write_failed: Enregistrement sécurisé impossible.".to_string())?;
+    let verified = entry.get_password().map_err(|_| {
+        "credential_read_failed: Vérification de la session impossible.".to_string()
+    })?;
+    if verified != token {
+        return Err("credential_write_failed: Vérification de la session impossible.".to_string());
+    }
+    Ok(())
 }
 #[tauri::command]
 fn load_desktop_session_token() -> Result<Option<String>, String> {
@@ -56,14 +68,21 @@ fn load_desktop_session_token() -> Result<Option<String>, String> {
             }
             Ok(None)
         }
-        Err(_) => Err("Lecture du stockage sécurisé impossible.".to_string()),
+        Err(_) => {
+            Err("credential_read_failed: Lecture du stockage sécurisé impossible.".to_string())
+        }
     }
 }
 #[tauri::command]
 fn delete_desktop_session_token() -> Result<(), String> {
     match desktop_token_entry()?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
-        Err(_) => return Err("Suppression de la session sécurisée impossible.".to_string()),
+        Err(_) => {
+            return Err(
+                "credential_write_failed: Suppression de la session sécurisée impossible."
+                    .to_string(),
+            )
+        }
     }
     for service in LEGACY_DESKTOP_TOKEN_SERVICES {
         if let Ok(entry) = keyring::Entry::new(service, DESKTOP_TOKEN_ACCOUNT) {
@@ -1584,5 +1603,37 @@ mod tests {
         assert!(!valid_offline_auth_snapshot(
             &json!({ "schemaVersion": 1, "token": "secret" })
         ));
+    }
+    #[test]
+    fn desktop_tokens_are_bounded_opaque_values_not_fixed_to_43_characters() {
+        for token in ["a".repeat(32), "x.y~z".repeat(20), "b".repeat(512)] {
+            assert!(validate_desktop_session_token(&token).is_ok());
+        }
+        for token in [
+            "".to_string(),
+            "a".repeat(31),
+            format!("{} {}", "a".repeat(32), "b"),
+            format!("{}\n", "a".repeat(32)),
+            format!("{}\u{0007}", "a".repeat(32)),
+            "a".repeat(513),
+        ] {
+            assert!(validate_desktop_session_token(&token).is_err());
+        }
+    }
+    #[test]
+    fn desktop_keyring_identifiers_are_stable() {
+        assert_eq!(DESKTOP_TOKEN_SERVICE, "com.pc.doublelibrary");
+        assert_eq!(DESKTOP_TOKEN_ACCOUNT, "desktop-session");
+    }
+    #[test]
+    #[ignore = "writes a disposable credential to the real OS credential manager"]
+    fn real_keyring_roundtrip_without_exposing_credential() {
+        let account = "desktop-session-rust-manual-test";
+        let entry = keyring::Entry::new(DESKTOP_TOKEN_SERVICE, account).unwrap();
+        let secret = format!("manual-test-{}", "x".repeat(32));
+        entry.set_password(&secret).unwrap();
+        assert_eq!(entry.get_password().unwrap(), secret);
+        entry.delete_credential().unwrap();
+        assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
     }
 }

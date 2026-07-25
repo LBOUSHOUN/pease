@@ -15,6 +15,18 @@ export interface SafeUser {
   mustChangePassword: boolean;
   permissions: Permission[];
 }
+export interface AccountProfile {
+  id: number;
+  fullName: string;
+  username: string;
+  email: string | null;
+  phone: string | null;
+  role: Role;
+  permissions: Permission[];
+  isActive: boolean;
+  createdAt: string;
+  lastLoginAt: string | null;
+}
 export interface ApiError {
   code: string;
   message: string;
@@ -61,6 +73,13 @@ export interface ProductListRow {
   categoryId: number | null;
   categoryName: string | null;
   name: string;
+  author?: string | null;
+  isbn10?: string | null;
+  isbn13?: string | null;
+  publisher?: string | null;
+  publicationYear?: number | null;
+  bookLanguage?: string | null;
+  coverImageUrl?: string | null;
   productType: ProductType;
   inventoryMode?: "quantity" | "serialized";
   sku: string | null;

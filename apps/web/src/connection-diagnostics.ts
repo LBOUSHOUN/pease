@@ -1,7 +1,7 @@
 import { isNativeDesktop } from "./desktop-session";
 
 export type ConnectionErrorCategory =
-  | "none" | "network" | "timeout" | "http" | "api_url"
+  | "none" | "network" | "timeout" | "cancelled" | "http" | "api_url"
   | "csp_webview" | "tauri_command" | "credential_manager"
   | "desktop_token" | "unexpected";
 

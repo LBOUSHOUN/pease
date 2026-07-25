@@ -78,7 +78,10 @@ export function isTauriRuntime(): boolean {
 
 export async function checkConnection(timeoutMs = 3_500): Promise<ConnectionState> {
   const controller = new AbortController();
-  const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = globalThis.setTimeout(
+    () => controller.abort(new DOMException("Délai dépassé", "TimeoutError")),
+    timeoutMs,
+  );
   try {
     await request<{ status: string }>("/health", { signal: controller.signal, cache: "no-store", skipDesktopAuth: true });
     return "online";

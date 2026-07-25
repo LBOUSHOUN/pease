@@ -91,4 +91,15 @@ describe("API client", () => {
       }),
     );
   });
+  it.each([
+    new DOMException("signal is aborted without reason", "AbortError"),
+    new Error("operation cancelled"),
+  ])("preserves cancellation without reporting network downtime", async (reason) => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(reason));
+    await expect(request("/x")).rejects.toSatisfy(
+      (error: unknown) =>
+        error === reason ||
+        (error instanceof Error && error.name === "AbortError"),
+    );
+  });
 });

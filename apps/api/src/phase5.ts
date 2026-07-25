@@ -214,7 +214,33 @@ async function reportData(
   } else if (kind === "registers") {
     rows = await sql<
       Row[]
-    >`select r.id,u.full_name worker,r.opened_at,r.closed_at,r.status,r.opening_amount_cents,coalesce(m.cash_sales,0)::bigint cash_sales_cents,coalesce(m.debt_payments,0)::bigint debt_payments_cents,coalesce(m.supplier_payments,0)::bigint supplier_payments_cents,coalesce(m.expenses,0)::bigint expenses_cents,coalesce(m.refunds,0)::bigint refunds_cents,r.expected_closing_cents,r.actual_closing_cents,r.difference_cents,count(*) over() total_count from cash_register_sessions r join users u on u.id=r.cashier_id left join lateral(select sum(amount_cents) filter(where movement_type='sale') cash_sales,sum(amount_cents) filter(where movement_type='customer_payment') debt_payments,sum(amount_cents) filter(where movement_type='supplier_payment') supplier_payments,sum(amount_cents) filter(where movement_type='expense') expenses,sum(amount_cents) filter(where movement_type='customer_refund') refunds from cash_movements where cash_register_session_id=r.id) m on true where (r.opened_at at time zone ${tz})::date between ${dates.start}::date and ${dates.end}::date and (${limitedUser ?? null}::int is null or r.cashier_id=${limitedUser ?? null}) order by r.opened_at desc limit ${p.pageSize} offset ${offset}`;
+    >`select r.id,u.full_name worker,r.opened_at,r.closed_at,r.status,r.opening_amount_cents,
+      coalesce(m.cash_sales,0)::bigint cash_sales_cents,
+      coalesce(m.debt_payments,0)::bigint debt_payments_cents,
+      coalesce(m.supplier_payments,0)::bigint supplier_payments_cents,
+      coalesce(m.expenses,0)::bigint expenses_cents,
+      coalesce(m.refunds,0)::bigint refunds_cents,
+      case when r.status='closed' then r.expected_closing_cents
+        else r.opening_amount_cents+coalesce(m.cash_delta,0) end::bigint expected_closing_cents,
+      r.actual_closing_cents,r.difference_cents,count(*) over() total_count
+      from cash_register_sessions r
+      join users u on u.id=r.cashier_id
+      left join lateral(
+        select
+          coalesce(sum(amount_cents) filter(where movement_type='cash_sale'),0)::bigint cash_sales,
+          coalesce(sum(amount_cents) filter(where movement_type='customer_debt_payment'),0)::bigint debt_payments,
+          coalesce(sum(amount_cents) filter(where movement_type in ('supplier_payment','purchase_cash')),0)::bigint supplier_payments,
+          coalesce(sum(case when movement_type='expense' then amount_cents when movement_type='expense_correction' then -amount_cents else 0 end),0)::bigint expenses,
+          coalesce(sum(amount_cents) filter(where movement_type='customer_refund'),0)::bigint refunds,
+          coalesce(sum(case
+            when movement_type in ('cash_sale','customer_debt_payment','register_adjustment_in','expense_correction') then amount_cents
+            when movement_type in ('register_adjustment_out','purchase_cash','supplier_payment','expense','customer_refund') then -amount_cents
+            else 0 end),0)::bigint cash_delta
+        from cash_movements where cash_register_session_id=r.id
+      ) m on true
+      where (r.opened_at at time zone ${tz})::date between ${dates.start}::date and ${dates.end}::date
+      and (${limitedUser ?? null}::int is null or r.cashier_id=${limitedUser ?? null})
+      order by r.opened_at desc limit ${p.pageSize} offset ${offset}`;
     summary = {
       session_count: Number(rows[0]?.total_count ?? 0),
       difference_cents: rows.reduce(
@@ -228,6 +254,9 @@ async function reportData(
   rows = rows.map((row) => {
     const copy = { ...row };
     delete copy.total_count;
+    for (const [key, value] of Object.entries(copy))
+      if (key.endsWith("_cents") && value !== null && value !== undefined)
+        copy[key] = Number(value);
     return copy;
   });
   if (kind === "sales") {

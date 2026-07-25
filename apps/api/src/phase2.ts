@@ -24,6 +24,7 @@ import {
   stockFiltersSchema,
   stockMovementFiltersSchema,
   barcodeValueSchema,
+  bookDuplicateQuerySchema,
 } from "@maktaba/validation";
 import { db } from "./db/index.js";
 import {
@@ -96,6 +97,13 @@ const pf = {
   categoryName: categories.name,
   name: products.name,
   description: products.description,
+  author: products.author,
+  isbn10: products.isbn10,
+  isbn13: products.isbn13,
+  publisher: products.publisher,
+  publicationYear: products.publicationYear,
+  bookLanguage: products.bookLanguage,
+  coverImageUrl: products.coverImageUrl,
   productType: products.productType,
   inventoryMode: products.inventoryMode,
   sku: products.sku,
@@ -129,6 +137,40 @@ const pf = {
   updatedAt: products.updatedAt,
 };
 export async function registerPhase2(app: FastifyInstance) {
+  app.get(
+    "/api/products/book-duplicates",
+    { preHandler: requirePermission("products.use_book_assistant") },
+    async (req, reply) => {
+      const parsed = bookDuplicateQuerySchema.safeParse(req.query);
+      if (!parsed.success)
+        return bad(reply, req.id, parsed.error.flatten().fieldErrors);
+      const value = parsed.data;
+      const rows = await db
+        .select(pf)
+        .from(products)
+        .leftJoin(categories, eq(products.categoryId, categories.id))
+        .where(
+          or(
+            value.isbn10
+              ? raw`lower(trim(${products.isbn10}))=${value.isbn10.toLowerCase()}`
+              : undefined,
+            value.isbn13
+              ? raw`lower(trim(${products.isbn13}))=${value.isbn13.toLowerCase()}`
+              : undefined,
+            value.title
+              ? and(
+                  ilike(products.name, value.title),
+                  value.author
+                    ? ilike(products.author, value.author)
+                    : undefined,
+                )
+              : undefined,
+          ),
+        )
+        .limit(10);
+      return { rows: rows.map((row) => safe(req, row)) };
+    },
+  );
   app.get(
     "/api/categories",
     { preHandler: requirePermission("categories.view") },

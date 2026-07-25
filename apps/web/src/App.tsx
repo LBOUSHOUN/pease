@@ -22,11 +22,13 @@ import { initializeAuth, OfflineColdStartError, resetAuthInitialization } from "
 import { singleFlight } from "./single-flight";
 import { checkConnection, getOfflineCacheStatus, getOfflineQueueSummary, isTauriRuntime, refreshOfflineCache, syncPendingOfflineSales } from "./offline-pos";
 import { useScanner } from "./use-scanner";
-import { enqueueGlobalScan, hasBlockingScannerContext } from "./global-scanner";
-import { deleteDesktopSessionToken, DesktopTokenStorageError, isNativeDesktop, saveDesktopSessionToken } from "./desktop-session";
+import { hasBlockingScannerContext, queueScanForPos } from "./global-scanner";
+import { clearInMemoryDesktopSessionToken, deleteDesktopSessionToken, DesktopTokenStorageError, isNativeDesktop, saveDesktopSessionToken } from "./desktop-session";
 import { connectionDiagnostics, recordConnectionAttempt, resetConnectionDiagnostics, type ConnectionDiagnostics } from "./connection-diagnostics";
 import { clearOfflineAuthSnapshot, saveOfflineAuthSnapshot } from "./offline-auth";
 const Dashboard = lazy(() => import("./Dashboard"));
+const AccountPage = lazy(() => import("./Account"));
+const BookAssistant = lazy(() => import("./BookAssistant"));
 const phase2 = () => import("./Phase2");
 const CategoriesPage = lazy(() =>
   phase2().then((m) => ({ default: m.CategoriesPage })),
@@ -320,6 +322,21 @@ function FormShell({
     </main>
   );
 }
+export async function persistDesktopSession(response: AuthResponse) {
+  if (!isNativeDesktop()) return;
+  if (!response.desktopSession) throw new DesktopTokenStorageError();
+  const token = response.desktopSession.token;
+  try {
+    await saveDesktopSessionToken(token);
+  } catch (reason) {
+    await clearInMemoryDesktopSessionToken();
+    await request("/auth/logout", {
+      method: "POST",
+      desktopTokenOverride: token,
+    }).catch(() => undefined);
+    throw reason;
+  }
+}
 function Onboarding({ done }: { done: (u: SafeUser) => void }) {
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
@@ -343,8 +360,7 @@ function Onboarding({ done }: { done: (u: SafeUser) => void }) {
         },
       });
       if (isNativeDesktop()) {
-        if (!x.desktopSession) throw new DesktopTokenStorageError();
-        await saveDesktopSessionToken(x.desktopSession.token);
+        await persistDesktopSession(x);
         await saveOfflineAuthSnapshot(x.user);
       }
       done(x.user);
@@ -380,7 +396,8 @@ function Onboarding({ done }: { done: (u: SafeUser) => void }) {
     </FormShell>
   );
 }
-function Login({ done, notice }: { done: (u: SafeUser) => void; notice: string }) {
+export function Login({ done, notice }: { done: (u: SafeUser) => void; notice: string }) {
+  const submitting = useRef(false);
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [showPassword, setShowPassword] = useState(false),
@@ -397,8 +414,10 @@ function Login({ done, notice }: { done: (u: SafeUser) => void; notice: string }
   }, [blockedUntil]);
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (busy || Date.now() < blockedUntil) return;
-    const f = new FormData(e.currentTarget);
+    if (submitting.current || busy || Date.now() < blockedUntil) return;
+    submitting.current = true;
+    const form = e.currentTarget;
+    const f = new FormData(form);
     setBusy(true);
     setError("");
     try {
@@ -410,18 +429,18 @@ function Login({ done, notice }: { done: (u: SafeUser) => void; notice: string }
             },
           });
       if (isNativeDesktop()) {
-        if (!response.desktopSession) throw new DesktopTokenStorageError();
-        await saveDesktopSessionToken(response.desktopSession.token);
+        await persistDesktopSession(response);
         await saveOfflineAuthSnapshot(response.user);
       }
       done(response.user);
     } catch (x) {
       setError(x instanceof Error ? x.message : "Connexion impossible");
-      const password = e.currentTarget.elements.namedItem("password");
+      const password = form.elements.namedItem("password");
       if (password instanceof HTMLInputElement) password.value = "";
       if (x instanceof ApiFailure && x.status === 429)
         setBlockedUntil(Date.now() + (x.retryAfterSeconds ?? 60) * 1000);
     } finally {
+      submitting.current = false;
       setBusy(false);
     }
   };
@@ -478,11 +497,11 @@ function Password({
             json: {
               currentPassword: field(f, "current"),
               newPassword: field(f, "new"),
+              confirmation: field(f, "confirm"),
             },
           });
       if (isNativeDesktop()) {
-        if (!response.desktopSession) throw new DesktopTokenStorageError();
-        await saveDesktopSessionToken(response.desktopSession.token);
+        await persistDesktopSession(response);
         await saveOfflineAuthSnapshot(response.user);
       }
       done(response.user);
@@ -594,12 +613,11 @@ function Layout({
       }
       setScannerWarning("");
       setUnknownBarcode("");
-      setScannerWarning("");
-      navigate("/pos");
-      enqueueGlobalScan(barcode);
+      queueScanForPos(barcode, loc.pathname, navigate);
     },
-    { maxIntervalMs: 80, minLength: 3, duplicateWindowMs: 0 },
+    { maxIntervalMs: 80, minLength: 3, duplicateWindowMs: 40 },
   );
+
   useEffect(() => {
     setMenu(false);
     setUnknownBarcode("");
@@ -631,7 +649,8 @@ function Layout({
           Double Library POS <small>Version en ligne</small>
         </div>
         <nav aria-label="Modules">
-          <NavLink to="/">Tableau de bord</NavLink>
+          <NavLink to="/" end>Tableau de bord</NavLink>
+          {!offline && <NavLink to="/account">Mon compte</NavLink>}
           {!offline && user.permissions.includes("products.view") && (
             <NavLink to="/products">Produits</NavLink>
           )}
@@ -691,12 +710,12 @@ function Layout({
           {logoutError && <small role="alert">{logoutError}</small>}
           <b>{user.fullName}</b>
           <small>{user.role}</small>
-          <button onClick={logout} disabled={loggingOut} aria-busy={loggingOut}>
+          <button type="button" onClick={logout} disabled={loggingOut} aria-busy={loggingOut}>
             {loggingOut ? "Déconnexion…" : "Déconnexion"}
           </button>
         </footer>
       </aside>
-      {menu && <button className="sidebar-overlay" aria-label="Fermer la navigation" onClick={() => setMenu(false)} />}
+      {menu && <button type="button" className="sidebar-overlay" aria-label="Fermer la navigation" onClick={() => setMenu(false)} />}
       <div className="main">
         {offline && (
           <div className="offline-banner" role="status">
@@ -705,7 +724,7 @@ function Layout({
           </div>
         )}
         <header>
-          <button className="menu-toggle" aria-label="Ouvrir la navigation" aria-controls="app-sidebar" aria-expanded={menu} onClick={() => setMenu(!menu)}>☰</button>
+          <button type="button" className="menu-toggle" aria-label={menu ? "Fermer la navigation" : "Ouvrir la navigation"} aria-controls="app-sidebar" aria-expanded={menu} onClick={() => setMenu(!menu)}>☰</button>
           <span className="topbar-title">Double Library POS</span>
           {scannerAvailable && (
             <button type="button" className="scanner-toggle secondary" aria-pressed={scannerEnabled} onClick={() => setScannerEnabled((value) => !value)}>
@@ -745,6 +764,9 @@ function Layout({
               </Suspense>
             }
           />
+          <Route path="/account" element={<Lazy><AccountPage user={user} /></Lazy>} />
+          <Route path="/account/profile" element={<Navigate to="/account" replace />} />
+          <Route path="/account/security" element={<Navigate to="/account" replace />} />
           <Route
             path="/categories"
             element={
@@ -782,6 +804,14 @@ function Layout({
             element={
               user.permissions.includes("products.create") ? (
                 <Lazy><ProductForm user={user} offline={offline} /></Lazy>
+              ) : <Navigate to="/forbidden" replace />
+            }
+          />
+          <Route
+            path="/products/new/book-assistant"
+            element={
+              user.permissions.includes("products.use_book_assistant") ? (
+                <Lazy><BookAssistant user={user} /></Lazy>
               ) : <Navigate to="/forbidden" replace />
             }
           />

@@ -12,11 +12,15 @@ export class OfflineColdStartError extends Error {
 }
 let initialization: Promise<BootstrapResult> | undefined;
 export async function testApiHealth(timeoutMs = 3_500) {
-  const controller = new AbortController(), timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  const controller = new AbortController(),
+    timeout = globalThis.setTimeout(
+      () => controller.abort(new DOMException("Délai dépassé", "TimeoutError")),
+      timeoutMs,
+    );
   try {
     return await request<{ status: string }>("/health", { method: "GET", cache: "no-store", skipDesktopAuth: true, signal: controller.signal });
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError")
+    if (error instanceof Error && error.name === "TimeoutError")
       throw new ApiFailure({ code: "TIMEOUT", message: "Le délai de connexion à l’API est dépassé." }, 0, undefined, "timeout");
     throw error;
   } finally { globalThis.clearTimeout(timeout); }

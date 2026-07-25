@@ -89,7 +89,15 @@ function bearer(req: FastifyRequest) {
   const header = req.headers.authorization;
   if (!header?.startsWith("Bearer ")) return undefined;
   const token = header.slice(7).trim();
-  return /^[A-Za-z0-9_-]{43}$/.test(token) ? token : undefined;
+  const containsForbiddenCharacter = [...token].some((character) => {
+    const code = character.charCodeAt(0);
+    return /\s/u.test(character) || code <= 31 || code === 127;
+  });
+  return token.length >= 32 &&
+    token.length <= 512 &&
+    !containsForbiddenCharacter
+    ? token
+    : undefined;
 }
 export function requirePermission(permission: string) {
   return async (req: FastifyRequest, reply: FastifyReply) => {

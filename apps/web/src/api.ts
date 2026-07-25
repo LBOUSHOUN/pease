@@ -4,8 +4,13 @@ import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { deleteDesktopSessionToken, desktopAuthorization, isNativeDesktop } from "./desktop-session";
 import { clearOfflineAuthSnapshot } from "./offline-auth";
 import { recordConnectionAttempt, type ConnectionErrorCategory } from "./connection-diagnostics";
+import { isAbortError } from "./request-error";
 
-export type ApiRequest = Omit<RequestInit, "body"> & { json?: unknown; skipDesktopAuth?: boolean };
+export type ApiRequest = Omit<RequestInit, "body"> & {
+  json?: unknown;
+  skipDesktopAuth?: boolean;
+  desktopTokenOverride?: string;
+};
 export class ApiFailure extends Error {
   constructor(
     public data: ApiError,
@@ -89,12 +94,20 @@ export async function request<T>(
   path: string,
   options: ApiRequest = {},
 ): Promise<T> {
-  const { json, headers: suppliedHeaders, skipDesktopAuth, ...init } = options;
+  const {
+    json,
+    headers: suppliedHeaders,
+    skipDesktopAuth,
+    desktopTokenOverride,
+    ...init
+  } = options;
   const headers = new Headers(suppliedHeaders);
   const native = isNativeDesktop();
   if (native) {
     headers.set("x-maktaba-client", "tauri-desktop");
-    const token = skipDesktopAuth ? null : await desktopAuthorization();
+    const token = skipDesktopAuth
+      ? null
+      : (desktopTokenOverride ?? (await desktopAuthorization()));
     if (token) headers.set("authorization", `Bearer ${token}`);
   }
   let body: string | undefined;
@@ -123,21 +136,28 @@ export async function request<T>(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error),
-      timeout = error instanceof DOMException && error.name === "AbortError",
+      timeout = error instanceof Error && error.name === "TimeoutError",
+      cancelled = isAbortError(error),
       category: ConnectionErrorCategory = timeout ? "timeout"
+        : cancelled ? "cancelled"
         : native && /scope|permission|not allowed|denied/i.test(message) ? "csp_webview"
           : native && /invoke|plugin|command/i.test(message) ? "tauri_command" : "network";
     recordConnectionAttempt({ category, errorName: error instanceof Error ? error.name : "Error", message, fetchAttempted: true });
     if (native) console.warn("[desktop-network] request failed", { path, category, errorName: error instanceof Error ? error.name : "Error" });
-    if (timeout) throw error;
+    if (cancelled) {
+      if (error instanceof Error) throw error;
+      throw new DOMException("La requête a été annulée.", "AbortError");
+    }
     throw new ApiFailure(
       {
         code: timeout ? "TIMEOUT" : "NETWORK_ERROR",
-        message: timeout ? "Le délai de connexion à l’API est dépassé." : "Impossible de joindre le serveur. Vérifiez votre connexion.",
+        message: timeout
+          ? "Le délai de connexion à l’API est dépassé."
+          : "Impossible de joindre le serveur. Vérifiez votre connexion.",
       },
       0,
       undefined,
-      category,
+      timeout ? "timeout" : category,
     );
   }
   recordConnectionAttempt({ category: response.ok ? "none" : "http", httpStatus: response.status, errorName: response.ok ? "—" : "HTTPError", message: response.ok ? "Requête réussie" : `Réponse HTTP ${response.status}` });

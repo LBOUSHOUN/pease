@@ -18,11 +18,12 @@ import type {
   SafeUser,
   RegisterStatus,
 } from "@maktaba/shared-types";
-import { buildApiUrl, request } from "./api";
+import { downloadFile, request } from "./api";
 import { centsToMad, madToCents } from "./money";
 import { calculateStockAfter } from "./stock-utils";
 import { useScanner } from "./use-scanner";
 import { enqueueGlobalScan } from "./global-scanner";
+import { isAbortError } from "./request-error";
 import { applyBarcodePrefill, readBarcodePrefill } from "./product-create-flow";
 import { isTauriRuntime, markCachedProductArchived, readQueueAsync, refreshOfflineCache } from "./offline-pos";
 const has = (u: SafeUser, p: string) => u.permissions.includes(p);
@@ -164,15 +165,24 @@ export function CategoriesPage({ user }: { user: SafeUser }) {
     query = useDebounced(search);
   useEffect(() => {
     const c = new AbortController();
+    let active = true;
     request<CategoryListResponse>(
       `/categories?${new URLSearchParams({ search: query, status, page: String(page) })}`,
       { signal: c.signal },
     )
-      .then(setData)
-      .catch((e) => {
-        if (e.name !== "AbortError") setError(e.message);
+      .then((result) => {
+        if (!active) return;
+        setData(result);
+        setError("");
+      })
+      .catch((e: unknown) => {
+        if (active && !isAbortError(e))
+          setError(e instanceof Error ? e.message : "Erreur");
       });
-    return () => c.abort();
+    return () => {
+      active = false;
+      c.abort();
+    };
   }, [query, status, page, refresh]);
   const toggle = async (x: Category) => {
     if (!x.isActive && !confirm("Réactiver cette catégorie ?")) return;
@@ -356,6 +366,7 @@ export function ProductsPage({ user }: { user: SafeUser }) {
     [data, setData] = useState<ProductListResponse>(),
     [found, setFound] = useState<ProductListRow>(),
     [error, setError] = useState(""),
+    [exporting, setExporting] = useState(false),
     query = useDebounced(search),
     load = () => {
       const c = new AbortController(),
@@ -364,19 +375,25 @@ export function ProductsPage({ user }: { user: SafeUser }) {
           status,
           page: String(page),
         });
+      let active = true;
       if (type) params.set("productType", type);
       if (categoryId) params.set("categoryId", categoryId);
       if (low) params.set("lowStockOnly", "true");
       if (out) params.set("outOfStockOnly", "true");
       request<ProductListResponse>(`/products?${params}`, { signal: c.signal })
         .then((result) => {
+          if (!active) return;
           setData(result);
           setError("");
         })
-        .catch((e) => {
-          if (e.name !== "AbortError") setError(e.message);
+        .catch((e: unknown) => {
+          if (active && !isAbortError(e))
+            setError(e instanceof Error ? e.message : "Erreur");
         });
-      return () => c.abort();
+      return () => {
+        active = false;
+        c.abort();
+      };
     };
   useEffect(load, [query, type, categoryId, status, low, out, page, refresh]);
   useEffect(() => {
@@ -400,6 +417,25 @@ export function ProductsPage({ user }: { user: SafeUser }) {
     }
   };
   useScanner((code) => void lookup(code));
+  const exportSerializedUnits = async () => {
+    if (exporting) return;
+    setExporting(true);
+    setError("");
+    try {
+      await downloadFile(
+        "/serialized-units/export.csv",
+        "double-library-unites-serialisees.csv",
+      );
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Impossible d’exporter les unités.",
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
   return (
     <main className="page">
       <div className="title">
@@ -409,10 +445,21 @@ export function ProductsPage({ user }: { user: SafeUser }) {
             Nouveau produit
           </Link>
         )}
+        {has(user, "products.use_book_assistant") && (
+          <Link className="button secondary" to="/products/new/book-assistant">
+            Ajouter un livre
+          </Link>
+        )}
         {has(user, "serialized_units.export") && (
-          <a className="button secondary" href={buildApiUrl("/serialized-units/export.csv")} target="_blank" rel="noreferrer">
-            Exporter les unités CSV
-          </a>
+          <button
+            type="button"
+            className="secondary"
+            disabled={exporting}
+            aria-busy={exporting}
+            onClick={() => void exportSerializedUnits()}
+          >
+            {exporting ? "Export en cours…" : "Exporter les unités CSV"}
+          </button>
         )}
       </div>
       <ErrorBox value={error} />
@@ -916,20 +963,18 @@ export function ProductDetails({ user, offline = false }: { user: SafeUser; offl
     [error, setError] = useState(""), [refresh, setRefresh] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
-    const isAbort = (reason: unknown) =>
-      reason instanceof Error &&
-      (reason.name === "AbortError" ||
-        reason.message.toLowerCase().includes("aborted"));
+    let active = true;
 
     request<ProductDetail>(`/products/${id}`, {
       signal: controller.signal,
     })
       .then((product) => {
+        if (!active) return;
         setX(product);
         setError("");
       })
       .catch((reason) => {
-        if (!isAbort(reason)) {
+        if (active && !isAbortError(reason)) {
           setError(
             reason instanceof Error ? reason.message : "Produit introuvable.",
           );
@@ -941,9 +986,11 @@ export function ProductDetails({ user, offline = false }: { user: SafeUser; offl
         `/stock/movements?productId=${id}&pageSize=10`,
         { signal: controller.signal },
       )
-        .then(setMoves)
+        .then((result) => {
+          if (active) setMoves(result);
+        })
         .catch((reason) => {
-          if (!isAbort(reason)) {
+          if (active && !isAbortError(reason)) {
             setError(
               reason instanceof Error
                 ? reason.message
@@ -955,7 +1002,10 @@ export function ProductDetails({ user, offline = false }: { user: SafeUser; offl
       setMoves(undefined);
     }
 
-    return () => controller.abort();
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, [id, user, refresh]);
   if (error)
     return (
@@ -996,6 +1046,12 @@ export function ProductDetails({ user, offline = false }: { user: SafeUser; offl
         </div>
       </section>
       <dl className="details">
+        {x.author && <><dt>Auteur</dt><dd>{x.author}</dd></>}
+        {x.isbn10 && <><dt>ISBN-10</dt><dd>{x.isbn10}</dd></>}
+        {x.isbn13 && <><dt>ISBN-13</dt><dd>{x.isbn13}</dd></>}
+        {x.publisher && <><dt>Éditeur</dt><dd>{x.publisher}</dd></>}
+        {x.publicationYear && <><dt>Année de publication</dt><dd>{x.publicationYear}</dd></>}
+        {x.bookLanguage && <><dt>Langue</dt><dd>{x.bookLanguage}</dd></>}
         <dt>Catégorie</dt>
         <dd>{x.categoryName}</dd>
         <dt>Type</dt>
@@ -1060,14 +1116,21 @@ export function StockPage({ user }: { user: SafeUser }) {
     query = useDebounced(search);
   useEffect(() => {
     const controller = new AbortController();
+    let active = true;
     request<CategoryListResponse>("/categories?pageSize=100&status=active", {
       signal: controller.signal,
     })
-      .then((value) => setCategoryOptions(value.rows))
-      .catch((reason) => {
-        if (reason.name !== "AbortError") setError(reason.message);
+      .then((value) => {
+        if (active) setCategoryOptions(value.rows);
+      })
+      .catch((reason: unknown) => {
+        if (active && !isAbortError(reason))
+          setError(reason instanceof Error ? reason.message : "Erreur");
       });
-    return () => controller.abort();
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, []);
   useEffect(() => {
     const c = new AbortController(),
@@ -1078,13 +1141,22 @@ export function StockPage({ user }: { user: SafeUser }) {
         lowStockOnly: String(low),
         outOfStockOnly: String(out),
       });
+    let active = true;
     if (categoryId) p.set("categoryId", categoryId);
     request<StockListResponse>(`/stock?${p}`, { signal: c.signal })
-      .then(setData)
-      .catch((reason) => {
-        if (reason.name !== "AbortError") setError(reason.message);
+      .then((result) => {
+        if (!active) return;
+        setData(result);
+        setError("");
+      })
+      .catch((reason: unknown) => {
+        if (active && !isAbortError(reason))
+          setError(reason instanceof Error ? reason.message : "Erreur");
       });
-    return () => c.abort();
+    return () => {
+      active = false;
+      c.abort();
+    };
   }, [query, categoryId, status, low, out, page]);
   return (
     <main className="page">
@@ -1448,6 +1520,7 @@ export function StockMovements() {
   useEffect(() => {
     const c = new AbortController(),
       p = new URLSearchParams({ page: String(page) });
+    let active = true;
     if (type) p.set("movementType", type);
     if (productId) p.set("productId", productId);
     if (workerId) p.set("workerId", workerId);
@@ -1456,11 +1529,19 @@ export function StockMovements() {
     request<StockMovementListResponse>(`/stock/movements?${p}`, {
       signal: c.signal,
     })
-      .then(setData)
-      .catch((reason) => {
-        if (reason.name !== "AbortError") setError(reason.message);
+      .then((result) => {
+        if (!active) return;
+        setData(result);
+        setError("");
+      })
+      .catch((reason: unknown) => {
+        if (active && !isAbortError(reason))
+          setError(reason instanceof Error ? reason.message : "Erreur");
       });
-    return () => c.abort();
+    return () => {
+      active = false;
+      c.abort();
+    };
   }, [page, type, productId, workerId, startDate, endDate]);
   return (
     <main className="page">

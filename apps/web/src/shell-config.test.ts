@@ -63,10 +63,37 @@ describe("shared application shell", () => {
     expect(css).toContain("overflow-x: hidden");
   });
 
+  it("keeps the dashboard active state exact and every sidebar target registered", () => {
+    const app = read("apps/web/src/App.tsx");
+    expect(app).toContain('<NavLink to="/" end>Tableau de bord</NavLink>');
+    const menuTargets = [
+      "/account", "/products", "/categories", "/stock", "/stock/receive",
+      "/register", "/pos", "/offline-queue", "/sales", "/customers",
+      "/suppliers", "/purchases", "/expenses", "/returns", "/employees",
+      "/reports", "/audit", "/settings", "/backups",
+    ];
+    for (const target of menuTargets) {
+      expect(app).toContain(`path="${target}"`);
+    }
+  });
+
+  it("downloads serialized-unit CSV through the authenticated client", () => {
+    const products = read("apps/web/src/Phase2.tsx");
+    expect(products).toContain('downloadFile(');
+    expect(products).toContain('"/serialized-units/export.csv"');
+    expect(products).not.toContain('href={buildApiUrl("/serialized-units/export.csv")}');
+    expect(products).toContain('disabled={exporting}');
+  });
+
   it("keeps a desktop scan while navigating globally to the POS", () => {
     const app = read("apps/web/src/App.tsx");
-    expect(app).toContain("enqueueGlobalScan(barcode)");
-    expect(app).toContain('navigate("/pos")');
+    const scanner = read("apps/web/src/global-scanner.ts");
+    expect(app).toContain(
+      "queueScanForPos(barcode, loc.pathname, navigate)",
+    );
+    expect(scanner.indexOf("enqueue(barcode)")).toBeLessThan(
+      scanner.indexOf('navigate("/pos")'),
+    );
     expect(app).toContain("Scanner global activé");
   });
 

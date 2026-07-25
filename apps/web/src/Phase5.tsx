@@ -14,6 +14,8 @@ import type {
 } from "@maktaba/shared-types";
 import { downloadFile, request } from "./api";
 import { centsToMad } from "./money";
+import { columnsForReport, formatReportValue } from "./report-format";
+import { isAbortError } from "./request-error";
 
 const has = (u: SafeUser, p: string) => u.permissions.includes(p),
   errorText = (x: unknown) =>
@@ -40,6 +42,7 @@ export function EmployeesPage({ user }: { user: SafeUser }) {
   useEffect(() => {
     const c = new AbortController(),
       params = new URLSearchParams({ page: String(page), pageSize: "25" });
+    let active = true;
     if (q.trim()) params.set("search", q.trim());
     if (role) params.set("role", role);
     if (status !== "all") params.set("status", status);
@@ -47,11 +50,18 @@ export function EmployeesPage({ user }: { user: SafeUser }) {
       `/users?${params}`,
       { signal: c.signal },
     )
-      .then(setData)
-      .catch((e) => {
-        if (e.name !== "AbortError") setError(errorText(e));
+      .then((result) => {
+        if (!active) return;
+        setData(result);
+        setError("");
+      })
+      .catch((e: unknown) => {
+        if (active && !isAbortError(e)) setError(errorText(e));
       });
-    return () => c.abort();
+    return () => {
+      active = false;
+      c.abort();
+    };
   }, [q, role, status, page]);
   return (
     <main className="page">
@@ -355,17 +365,25 @@ export function AuditPage() {
   useEffect(() => {
     const c = new AbortController(),
       params = new URLSearchParams({ pageSize: "50" });
+    let active = true;
     if (q.trim()) params.set("search", q.trim());
     if (action.trim()) params.set("action", action.trim());
     if (entity.trim()) params.set("entityType", entity.trim());
     if (start) params.set("startDate", start);
     if (end) params.set("endDate", end);
     request<AuditListResponse>(`/audit-logs?${params}`, { signal: c.signal })
-      .then(setData)
-      .catch((e) => {
-        if (e.name !== "AbortError") setError(errorText(e));
+      .then((result) => {
+        if (!active) return;
+        setData(result);
+        setError("");
+      })
+      .catch((e: unknown) => {
+        if (active && !isAbortError(e)) setError(errorText(e));
       });
-    return () => c.abort();
+    return () => {
+      active = false;
+      c.abort();
+    };
   }, [q, action, entity, start, end]);
   return (
     <main className="page">
@@ -480,6 +498,7 @@ export function ReportPage({ kind, user }: { kind: string; user: SafeUser }) {
     [search, setSearch] = useState(""),
     [data, setData] = useState<ReportResponse>(),
     [error, setError] = useState(""),
+    [exporting, setExporting] = useState(false),
     q = useDebounce(search);
   useEffect(() => {
     if (preset === "custom" && (!start || !end || start > end)) {
@@ -488,33 +507,42 @@ export function ReportPage({ kind, user }: { kind: string; user: SafeUser }) {
     }
     const c = new AbortController(),
       params = new URLSearchParams({ preset, pageSize: "50" });
+    let active = true;
     if (preset === "custom" && start) params.set("startDate", start);
     if (preset === "custom" && end) params.set("endDate", end);
     if (q.trim()) params.set("search", q.trim());
     request<ReportResponse>(`/reports/${kind}?${params}`, { signal: c.signal })
       .then((x) => {
+        if (!active) return;
         setData(x);
         setError("");
       })
-      .catch((e) => {
-        if (e.name !== "AbortError") setError(errorText(e));
+      .catch((e: unknown) => {
+        if (active && !isAbortError(e)) setError(errorText(e));
       });
-    return () => c.abort();
+    return () => {
+      active = false;
+      c.abort();
+    };
   }, [kind, preset, start, end, q]);
   const exportCsv = async () => {
+    if (exporting) return;
     const params = new URLSearchParams({ preset });
     if (preset === "custom" && start) params.set("startDate", start);
     if (preset === "custom" && end) params.set("endDate", end);
     if (q.trim()) params.set("search", q.trim());
 
+    setExporting(true);
     try {
       await downloadFile(
         `/exports/${kind}.csv?${params}`,
-        `maktaba-${kind}.csv`,
+        `double-library-${kind}-${preset}.csv`,
       );
       setError("");
     } catch (e) {
       setError(errorText(e));
+    } finally {
+      setExporting(false);
     }
   };
   const printReport = () => {
@@ -527,18 +555,31 @@ export function ReportPage({ kind, user }: { kind: string; user: SafeUser }) {
     window.print();
   };
   const label = reportKinds.find((x) => x.id === kind)?.label ?? kind,
-    headers = data?.rows[0] ? Object.keys(data.rows[0]) : [];
+    columns = columnsForReport(kind, data?.rows[0]),
+    periodLabel =
+      preset === "custom"
+        ? `${start || "—"} – ${end || "—"}`
+        : {
+            today: "Aujourd’hui",
+            yesterday: "Hier",
+            this_week: "Cette semaine",
+            this_month: "Ce mois",
+            last_month: "Mois dernier",
+          }[preset] ?? preset;
   return (
     <main className="page print-sheet">
       <div className="title">
         <h1>{label}</h1>
         <div>
           {has(user, "exports.create") && (
-            <button onClick={exportCsv}>Exporter CSV</button>
+            <button type="button" onClick={() => void exportCsv()} disabled={exporting} aria-busy={exporting}>
+              {exporting ? "Export en cours…" : "Exporter CSV"}
+            </button>
           )}{" "}
-          <button onClick={printReport}>Imprimer</button>
+          <button type="button" onClick={printReport}>Imprimer</button>
         </div>
       </div>
+      <p className="report-period">Période : {periodLabel}</p>
       {kind === "profit" && (
         <div className="notice">
           Estimation de marge brute, pas un bénéfice comptable audité.
@@ -593,19 +634,17 @@ export function ReportPage({ kind, user }: { kind: string; user: SafeUser }) {
           <table>
             <thead>
               <tr>
-                {headers.map((h) => (
-                  <th key={h}>{human(h)}</th>
+                {columns.map((column) => (
+                  <th key={column.key}>{column.label}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {data?.rows.map((row, i) => (
                 <tr key={i}>
-                  {headers.map((h) => (
-                    <td key={h}>
-                      {h.includes("cents")
-                        ? centsToMad(Number(row[h]))
-                        : String(row[h] ?? "—")}
+                  {columns.map((column) => (
+                    <td key={column.key}>
+                      {formatReportValue(row[column.key], column)}
                     </td>
                   ))}
                 </tr>

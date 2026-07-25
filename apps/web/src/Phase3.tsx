@@ -52,6 +52,7 @@ import {
   releaseCachedSerializedUnits,
 } from "./offline-pos";
 import type { OfflineCacheStatus, OfflineQueueSummary, OfflineSaleRecord } from "./offline-pos";
+import { isAbortError } from "./request-error";
 
 const has = (user: SafeUser, permission: string) =>
   user.permissions.includes(permission);
@@ -105,12 +106,21 @@ export function RegisterPage({ user }: { user: SafeUser }) {
     [error, setError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
+    let active = true;
     request<RegisterStatus>("/register/status", { signal: controller.signal })
-      .then(setStatus)
-      .catch(
-        (reason) => reason.name !== "AbortError" && setError(reason.message),
-      );
-    return () => controller.abort();
+      .then((result) => {
+        if (!active) return;
+        setStatus(result);
+        setError("");
+      })
+      .catch((reason: unknown) => {
+        if (active && !isAbortError(reason))
+          setError(reason instanceof Error ? reason.message : "Erreur");
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, []);
   return (
     <main className="page">
@@ -320,12 +330,23 @@ export function RegisterSessions() {
     [error, setError] = useState("");
   useEffect(() => {
     const c = new AbortController();
+    let active = true;
     request<RegisterSessionListResponse>(`/register/sessions?page=${page}`, {
       signal: c.signal,
     })
-      .then(setData)
-      .catch((e) => e.name !== "AbortError" && setError(e.message));
-    return () => c.abort();
+      .then((result) => {
+        if (!active) return;
+        setData(result);
+        setError("");
+      })
+      .catch((e: unknown) => {
+        if (active && !isAbortError(e))
+          setError(e instanceof Error ? e.message : "Erreur");
+      });
+    return () => {
+      active = false;
+      c.abort();
+    };
   }, [page]);
   return (
     <main className="page">
@@ -510,10 +531,21 @@ export function CustomersPage({ user }: { user: SafeUser }) {
         debtOnly: String(debt),
         page: String(page),
       });
+    let active = true;
     request<CustomerListResponse>(`/customers?${p}`, { signal: c.signal })
-      .then(setData)
-      .catch((e) => e.name !== "AbortError" && setError(e.message));
-    return () => c.abort();
+      .then((result) => {
+        if (!active) return;
+        setData(result);
+        setError("");
+      })
+      .catch((e: unknown) => {
+        if (active && !isAbortError(e))
+          setError(e instanceof Error ? e.message : "Erreur");
+      });
+    return () => {
+      active = false;
+      c.abort();
+    };
   }, [query, status, debt, page]);
   return (
     <main className="page">
@@ -694,6 +726,7 @@ export function CustomerDetails({ user }: { user: SafeUser }) {
     [error, setError] = useState("");
   useEffect(() => {
     const c = new AbortController();
+    let active = true;
     Promise.all([
       request<Customer>(`/customers/${id}`, { signal: c.signal }),
       has(user, "credit.view")
@@ -707,12 +740,20 @@ export function CustomerDetails({ user }: { user: SafeUser }) {
       }),
     ])
       .then(([a, b, d]) => {
+        if (!active) return;
         setCustomer(a);
         setLedger(b);
         setSales(d);
+        setError("");
       })
-      .catch((e) => e.name !== "AbortError" && setError(e.message));
-    return () => c.abort();
+      .catch((e: unknown) => {
+        if (active && !isAbortError(e))
+          setError(e instanceof Error ? e.message : "Erreur");
+      });
+    return () => {
+      active = false;
+      c.abort();
+    };
   }, [id, user]);
   const toggle = async () => {
     if (!customer) return;
@@ -1666,14 +1707,20 @@ export function SalesPage() {
   useEffect(() => {
     const c = new AbortController(),
       p = new URLSearchParams({ search: query, page: String(page) });
+    let active = true;
     if (mode) p.set("paymentMode", mode);
     void request<SaleListResponse>(`/sales?${p}`, { signal: c.signal })
-      .then(setData)
+      .then((result) => {
+        if (active) setData(result);
+      })
       .catch((error: unknown) => {
-        if (error instanceof Error && error.name === "AbortError") return;
+        if (!active || isAbortError(error)) return;
         console.error(error);
       });
-    return () => c.abort();
+    return () => {
+      active = false;
+      c.abort();
+    };
   }, [query, mode, page]);
   return (
     <main className="page">
@@ -1750,10 +1797,21 @@ export function SaleDetails() {
     [error, setError] = useState("");
   useEffect(() => {
     const c = new AbortController();
+    let active = true;
     request<SaleDetail>(`/sales/${id}`, { signal: c.signal })
-      .then(setSale)
-      .catch((e) => e.name !== "AbortError" && setError(e.message));
-    return () => c.abort();
+      .then((result) => {
+        if (!active) return;
+        setSale(result);
+        setError("");
+      })
+      .catch((e: unknown) => {
+        if (active && !isAbortError(e))
+          setError(e instanceof Error ? e.message : "Erreur");
+      });
+    return () => {
+      active = false;
+      c.abort();
+    };
   }, [id]);
   return (
     <main className={`page print-sheet receipt-format-${format}`}>
