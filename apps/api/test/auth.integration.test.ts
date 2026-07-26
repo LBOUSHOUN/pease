@@ -400,7 +400,7 @@ describe("online authentication", () => {
         payload: body,
       });
       expect(r.statusCode).toBe(401);
-      expect(r.json().code).toBe("BAD_CREDENTIALS");
+      expect(r.json().code).toBe("INVALID_CREDENTIALS");
     }
   });
   it("rejects inactive users", async () => {
@@ -416,7 +416,8 @@ describe("online authentication", () => {
       url: "/api/auth/login",
       payload: { login: "owner", password: "Secret123" },
     });
-    expect(r.statusCode).toBe(403);
+    expect(r.statusCode).toBe(401);
+    expect(r.json().code).toBe("ACCOUNT_DISABLED");
   });
   it("persists auth, accepts empty logout, revokes and clears cookie idempotently", async () => {
     const created = await owner(),
@@ -461,7 +462,7 @@ describe("online authentication", () => {
       });
     expect(last!.statusCode).toBe(429);
     expect(last!.headers["retry-after"]).toBeDefined();
-    expect(last!.json().code).toBe("RATE_LIMITED");
+    expect(last!.json().code).toBe("TOO_MANY_ATTEMPTS");
   });
 });
 

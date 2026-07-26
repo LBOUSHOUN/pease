@@ -59,7 +59,11 @@ describe("desktop login persistence", () => {
       target: { value: "secret" },
     });
     fireEvent.submit(screen.getByRole("button", { name: "Se connecter" }).closest("form")!);
-    expect(await screen.findByText("storage failed")).toBeTruthy();
+    expect(
+      await screen.findByText(
+        "Connexion réussie, mais la session n’a pas pu être enregistrée.",
+      ),
+    ).toBeTruthy();
     expect(mocks.clear).toHaveBeenCalledOnce();
     expect(mocks.request).toHaveBeenNthCalledWith(
       2,

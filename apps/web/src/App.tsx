@@ -360,7 +360,9 @@ export async function persistDesktopSession(response: AuthResponse) {
       method: "POST",
       desktopTokenOverride: token,
     }).catch(() => undefined);
-    throw reason;
+    throw reason instanceof DesktopTokenStorageError
+      ? reason
+      : new DesktopTokenStorageError();
   }
 }
 function Onboarding({ done }: { done: (u: SafeUser) => void }) {
@@ -503,16 +505,33 @@ export function Login({ done, notice }: { done: (u: SafeUser) => void; notice: s
 }
 
 export function loginErrorMessage(error: unknown, loginAccepted: boolean) {
-  if (loginAccepted && error instanceof ApiFailure && error.status === 401) {
-    return ["SESSION_EXPIRED", "SESSION_REVOKED"].includes(error.data.code)
-      ? "Connexion expirée. Reconnectez-vous."
-      : "Session refusée par le navigateur. Autorisez les cookies puis réessayez.";
+  if (loginAccepted && error instanceof ApiFailure)
+    return "La connexion a réussi, mais la session n’a pas pu être confirmée.";
+  if (error instanceof ApiFailure) {
+    if (error.isNetworkError) return "Impossible de contacter le serveur.";
+    if (
+      error.status === 401 &&
+      ["BAD_CREDENTIALS", "INVALID_CREDENTIALS"].includes(error.code ?? "")
+    )
+      return "Identifiant ou mot de passe incorrect.";
+    if (
+      error.status === 401 &&
+      ["INACTIVE_USER", "ACCOUNT_DISABLED", "MEMBERSHIP_DISABLED"].includes(
+        error.code ?? "",
+      )
+    )
+      return "Ce compte est désactivé.";
+    if (error.status === 403)
+      return "Vous n’êtes pas autorisé à accéder à cette application.";
+    if (error.status === 429)
+      return "Trop de tentatives. Réessayez dans quelques minutes.";
+    if (error.status >= 500)
+      return "Une erreur interne empêche la connexion.";
+    return error.message;
   }
-  if (error instanceof ApiFailure && error.status === 0)
-    return "Serveur indisponible. Vérifiez votre connexion.";
-  if (error instanceof ApiFailure && error.status >= 500)
-    return "Erreur interne. Réessayez plus tard.";
-  return error instanceof Error ? error.message : "Connexion impossible.";
+  if (error instanceof DesktopTokenStorageError)
+    return "Connexion réussie, mais la session n’a pas pu être enregistrée.";
+  return "Impossible de contacter le serveur.";
 }
 
 function Password({

@@ -85,7 +85,7 @@ export async function buildApp() {
     const normalized =
       status === 429
         ? {
-            code: "RATE_LIMITED",
+            code: "TOO_MANY_ATTEMPTS",
             message: "Trop de tentatives. Réessayez dans quelques minutes.",
           }
         : status === 409
@@ -200,7 +200,7 @@ export async function buildApp() {
         Math.max(1, Math.ceil((state.resetAt - now) / 1000)).toString(),
       );
       return reply.code(429).send({
-        code: "RATE_LIMITED",
+        code: "TOO_MANY_ATTEMPTS",
         message: "Trop de tentatives. Réessayez dans quelques minutes.",
         requestId: req.id,
       });
@@ -225,7 +225,7 @@ export async function buildApp() {
       state.count += 1;
       state.resetAt = Math.max(state.resetAt, now + loginRateLimitWindowMs);
       return reply.code(401).send({
-        code: "BAD_CREDENTIALS",
+        code: "INVALID_CREDENTIALS",
         message: "Identifiant ou mot de passe incorrect.",
         requestId: req.id,
       });
@@ -234,9 +234,9 @@ export async function buildApp() {
     if (!u.isActive) {
       state.count += 1;
       state.resetAt = Math.max(state.resetAt, now + loginRateLimitWindowMs);
-      return reply.code(403).send({
-        code: "INACTIVE_USER",
-        message: "Compte désactivé",
+      return reply.code(401).send({
+        code: "ACCOUNT_DISABLED",
+        message: "Ce compte est désactivé.",
         requestId: req.id,
       });
     }
