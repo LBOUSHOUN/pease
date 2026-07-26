@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 describe("scanner-first stock receiving", () => {
   const source = readFileSync(resolve(process.cwd(), "src/StockReceiving.tsx"), "utf8");
   it("uses exact product lookup and the atomic receipt endpoint", () => {
-    expect(source).toContain("/products/lookup/");
+    expect(source).toContain("/products/resolve-barcode?code=");
     expect(source).toContain('request<ReceiptResult>("/stock/receipts"');
     expect(source).toContain("crypto.randomUUID()");
   });

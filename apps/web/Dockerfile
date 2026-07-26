@@ -8,3 +8,4 @@ COPY apps/web apps/web
 RUN npm run build -w @maktaba/web
 FROM caddy:2-alpine
 COPY --from=build /app/apps/web/dist /usr/share/caddy
+COPY apps/web/Caddyfile /etc/caddy/Caddyfile

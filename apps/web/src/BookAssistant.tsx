@@ -7,19 +7,18 @@ import type {
 } from "@maktaba/shared-types";
 import { request } from "./api";
 import CameraScanner from "./CameraScanner";
+import BookCoverCamera from "./BookCoverCamera";
+import BookTitleCrop from "./BookTitleCrop";
 import {
-  findIsbnInText,
   normalizeIsbn,
-  ocrSuggestions,
   validateBookImage,
 } from "./book-assistant";
-
-type BarcodeDetectorLike = {
-  detect(source: ImageBitmap): Promise<Array<{ rawValue: string }>>;
-};
-type TextDetectorLike = {
-  detect(source: ImageBitmap): Promise<Array<{ rawValue: string }>>;
-};
+import {
+  analyzeBookCover,
+  getNativeOcrStatus,
+  type BookOcrResult,
+  type OcrStatus,
+} from "./native-ocr";
 
 export default function BookAssistant({ user }: { user: SafeUser }) {
   const navigate = useNavigate(),
@@ -34,15 +33,26 @@ export default function BookAssistant({ user }: { user: SafeUser }) {
     [error, setError] = useState(""),
     [duplicates, setDuplicates] = useState<ProductListRow[]>([]),
     [preview, setPreview] = useState(""),
-    [camera, setCamera] = useState(false),
+    [isbnCamera, setIsbnCamera] = useState(false),
+    [coverCamera, setCoverCamera] = useState(false),
+    [selectedImage, setSelectedImage] = useState<File>(),
+    [cropMode, setCropMode] = useState(false),
+    [ocrResult, setOcrResult] = useState<BookOcrResult>(),
+    [ocrStatus, setOcrStatus] = useState<OcrStatus>(),
+    [ocrBusy, setOcrBusy] = useState(false),
     [busy, setBusy] = useState(false),
     [confirmed, setConfirmed] = useState(false),
-    previewRef = useRef("");
+    previewRef = useRef(""),
+    ocrRunning = useRef(false),
+    titleEdited = useRef(false);
 
   const clearTemporaryImage = () => {
     if (previewRef.current) URL.revokeObjectURL(previewRef.current);
     previewRef.current = "";
     setPreview("");
+    setSelectedImage(undefined);
+    setCropMode(false);
+    setOcrResult(undefined);
     setStatus("Saisie manuelle disponible.");
     setError("");
   };
@@ -66,6 +76,7 @@ export default function BookAssistant({ user }: { user: SafeUser }) {
   );
 
   useEffect(() => {
+    void getNativeOcrStatus().then(setOcrStatus);
     void request<CategoryListResponse>("/categories?status=active&pageSize=100")
       .then((result) => setCategories(result.rows))
       .catch(() => setError("Impossible de charger les catégories."));
@@ -84,79 +95,66 @@ export default function BookAssistant({ user }: { user: SafeUser }) {
     const params = new URLSearchParams();
     if (normalized.isbn10) params.set("isbn10", normalized.isbn10);
     if (normalized.isbn13) params.set("isbn13", normalized.isbn13);
-    const result = await request<{ rows: ProductListRow[] }>(
-      `/products/book-duplicates?${params}`,
-    );
-    setDuplicates(result.rows);
-    if (result.rows.length) setStatus("Produit déjà existant.");
+    try {
+      const result = await request<{ rows: ProductListRow[] }>(
+        `/products/book-duplicates?${params}`,
+      );
+      setDuplicates(result.rows);
+      if (result.rows.length) setStatus("Produit déjà existant.");
+    } catch {
+      setError(
+        "ISBN détecté, mais la vérification des doublons nécessite une connexion.",
+      );
+    }
   };
 
-  const analyze = async (file?: File) => {
+  const selectImage = (file?: File) => {
     if (!file) return;
     const validation = validateBookImage(file);
     if (validation) return setError(validation);
-    setBusy(true);
     setError("");
-    setStatus("Analyse de l’image…");
+    setStatus("Photo prête pour l’analyse locale.");
     const objectUrl = URL.createObjectURL(file);
     if (previewRef.current) URL.revokeObjectURL(previewRef.current);
     previewRef.current = objectUrl;
     setPreview(objectUrl);
+    setSelectedImage(file);
+    setCropMode(false);
+    setOcrResult(undefined);
+  };
+
+  const analyze = async (image = selectedImage, titleRegion = false) => {
+    if (!image || ocrRunning.current) return;
+    ocrRunning.current = true;
+    setOcrBusy(true);
+    setError("");
+    setStatus("Préparation de l’image…");
     try {
-      const bitmap = await createImageBitmap(file);
-      if (
-        bitmap.width < 50 ||
-        bitmap.height < 50 ||
-        bitmap.width > 8000 ||
-        bitmap.height > 8000
-      )
-        throw new Error("Dimensions d’image non prises en charge.");
-      const scope = window as typeof window & {
-        BarcodeDetector?: new (options: { formats: string[] }) => BarcodeDetectorLike;
-        TextDetector?: new () => TextDetectorLike;
-      };
-      if (scope.BarcodeDetector) {
-        const detector = new scope.BarcodeDetector({
-          formats: ["ean_13", "ean_8", "code_128"],
-        });
-        for (const code of await detector.detect(bitmap)) {
-          const isbn = normalizeIsbn(code.rawValue);
-          if (isbn) {
-            await applyIsbn(code.rawValue);
-            bitmap.close();
-            return;
-          }
-        }
-      }
-      if (scope.TextDetector) {
-        const detected = await new scope.TextDetector().detect(bitmap);
-        const rawText = detected.map((item) => item.rawValue).join("\n");
-        const isbn = findIsbnInText(rawText);
-        if (isbn) await applyIsbn(isbn.isbn13 ?? isbn.isbn10!);
-        else {
-          const suggestion = ocrSuggestions(rawText);
-          if (!title && suggestion.title) setTitle(suggestion.title);
-          setStatus(
-            suggestion.title
-              ? "Informations proposées par OCR — vérifiez-les."
-              : "Aucun ISBN détecté — saisie manuelle disponible.",
-          );
-        }
-      } else {
-        setStatus(
-          "Aucun ISBN détecté — OCR indisponible dans ce navigateur, saisie manuelle disponible.",
-        );
-      }
-      bitmap.close();
+      setStatus("Lecture du texte…");
+      const result = await analyzeBookCover(image, { titleRegion });
+      setStatus("Recherche du titre…");
+      setOcrResult(result);
+      if (result.title && !titleEdited.current) setTitle(result.title);
+      if (result.author) setAuthor(result.author);
+      if (result.isbn10) setIsbn10(result.isbn10);
+      if (result.isbn13) setIsbn13(result.isbn13);
+      if (result.isbn10 || result.isbn13)
+        await applyIsbn(result.isbn13 ?? result.isbn10!);
+      setStatus(
+        result.title
+          ? "Titre détecté — vérifiez et corrigez le titre."
+          : "Le titre n’a pas été détecté avec suffisamment de fiabilité.",
+      );
     } catch (reason) {
       setError(
         reason instanceof Error
           ? reason.message
-          : "Échec de lecture — saisie manuelle disponible.",
+          : "L’analyse locale a échoué. Réessayez avec une photo plus nette.",
       );
-      setStatus("Échec de lecture — saisie manuelle disponible.");
+      setStatus("Saisie manuelle disponible.");
     } finally {
-      setBusy(false);
+      ocrRunning.current = false;
+      setOcrBusy(false);
     }
   };
 
@@ -207,6 +205,7 @@ export default function BookAssistant({ user }: { user: SafeUser }) {
           trackStock: true,
         },
       });
+      clearTemporaryImage();
       navigate(`/products/${created.id}`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Création impossible.");
@@ -220,22 +219,69 @@ export default function BookAssistant({ user }: { user: SafeUser }) {
       <div className="page-header"><div><h1>Ajouter un livre</h1><p>Les informations détectées restent modifiables avant confirmation.</p></div></div>
       {error && <div className="error" role="alert">{error}</div>}
       <div className="notice" role="status">{status}</div>
+      {ocrStatus?.errorCode === "BROWSER_NOT_NATIVE" && (
+        <div className="notice">
+          L’analyse locale avancée est disponible dans l’application Windows.
+          La saisie manuelle et le scan ISBN restent disponibles.
+        </div>
+      )}
+      {ocrStatus && ocrStatus.errorCode !== "BROWSER_NOT_NATIVE" && !ocrStatus.available && (
+        <div className="error" role="alert">
+          Le module de lecture locale n’est pas disponible sur cet appareil.
+        </div>
+      )}
       <section className="section-card assistant-inputs">
-        <label>Photo de couverture<input type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" onChange={(event) => void analyze(event.target.files?.[0])} /></label>
-        {user.permissions.includes("scanner.camera") && <button type="button" className="secondary" onClick={() => setCamera(true)}>Scanner avec la caméra</button>}
+        <label>Importer une image<input type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" onChange={(event) => selectImage(event.target.files?.[0])} /></label>
+        {user.permissions.includes("scanner.camera") && <button type="button" className="secondary" onClick={() => setCoverCamera(true)}>Photographier le livre</button>}
+        {user.permissions.includes("scanner.camera") && <button type="button" className="secondary" onClick={() => setIsbnCamera(true)}>Scanner l’ISBN</button>}
         <label>ISBN manuel<input value={isbn13 || isbn10} onChange={(event) => { setIsbn13(event.target.value); setIsbn10(""); }} /></label>
         <button type="button" onClick={() => void applyIsbn(isbn13 || isbn10)}>Vérifier l’ISBN</button>
         {preview && <div className="book-cover-local">
           <img className="book-cover-preview" src={preview} alt="Aperçu local de la couverture" />
-          <p>La photo sert uniquement à détecter le nom du livre.<br />Elle ne sera ni enregistrée ni envoyée au serveur.</p>
-          <button type="button" className="secondary" onClick={clearTemporaryImage}>Retirer la photo</button>
+          <p>La photo est analysée uniquement sur cet appareil. Elle ne sera ni envoyée ni enregistrée.</p>
+          <div className="actions">
+            <button type="button" disabled={!ocrStatus?.available || ocrBusy} aria-busy={ocrBusy} onClick={() => void analyze(selectedImage, false)}>
+              {ocrBusy ? "Lecture du texte…" : ocrResult ? "Réessayer" : "Analyser la couverture"}
+            </button>
+            <button type="button" className="secondary" disabled={ocrBusy} onClick={() => setCropMode((value) => !value)}>
+              {cropMode ? "Masquer le recadrage" : "Encadrer le titre"}
+            </button>
+            <button type="button" className="secondary" disabled={ocrBusy} onClick={clearTemporaryImage}>Effacer la photo</button>
+          </div>
         </div>}
+        {preview && cropMode && (
+          <BookTitleCrop
+            imageUrl={preview}
+            onReset={() => undefined}
+            onCrop={(file) => {
+              void analyze(file, true);
+            }}
+          />
+        )}
       </section>
-      {camera && <CameraScanner close={() => setCamera(false)} onScan={(code) => { setCamera(false); void applyIsbn(code); }} />}
+      {coverCamera && <BookCoverCamera close={() => setCoverCamera(false)} captured={selectImage} />}
+      {isbnCamera && <CameraScanner close={() => setIsbnCamera(false)} onScan={(code) => { setIsbnCamera(false); void applyIsbn(code); }} />}
+      {ocrResult && (
+        <section className="section-card ocr-suggestions" aria-labelledby="ocr-results-title">
+          <h2 id="ocr-results-title">Suggestions détectées</h2>
+          <dl>
+            <dt>Nom détecté</dt><dd dir="auto">{ocrResult.title ?? "—"}{ocrResult.titleConfidence !== null && ` (${Math.round(ocrResult.titleConfidence)} %)`}</dd>
+            <dt>Auteur détecté</dt><dd>{ocrResult.author ?? "—"}</dd>
+            <dt>ISBN détecté</dt><dd>{ocrResult.isbn13 ?? ocrResult.isbn10 ?? "—"}</dd>
+          </dl>
+          {ocrResult.alternatives.length > 0 && <div><h3>Autres noms possibles</h3>{ocrResult.alternatives.map((alternative) => (
+            <article className="ocr-candidate" key={`${alternative.language ?? "?"}-${alternative.text}`}>
+              <span dir="auto">{alternative.text}</span>
+              {alternative.confidence !== null && alternative.confidence < 70 && <small>Résultat incertain</small>}
+              <button type="button" className="link" onClick={() => { titleEdited.current = true; setTitle(alternative.text); }}>Utiliser ce titre</button>
+            </article>
+          ))}</div>}
+        </section>
+      )}
       {duplicates.length > 0 && <section className="section-card"><h2>Produit déjà existant</h2>{duplicates.map((product) => <p key={product.id}><Link to={`/products/${product.id}`}>{product.name}</Link>{user.permissions.includes("stock.adjust") && <> · <Link to={`/stock/receive?productId=${product.id}`}>Ajouter du stock</Link></>}</p>)}</section>}
       <form className="section-card grid-form" onSubmit={submit}>
         <h2>Informations proposées</h2>
-        <label>Titre<input required maxLength={200} value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+        <label>Titre<input dir="auto" required maxLength={200} value={title} onChange={(event) => { titleEdited.current = true; setTitle(event.target.value); }} /></label>
         <label>Auteur<input maxLength={300} value={author} onChange={(event) => setAuthor(event.target.value)} /></label>
         <label>ISBN-10<input value={isbn10} onChange={(event) => setIsbn10(event.target.value)} /></label>
         <label>ISBN-13<input value={isbn13} onChange={(event) => setIsbn13(event.target.value)} /></label>
@@ -249,7 +295,7 @@ export default function BookAssistant({ user }: { user: SafeUser }) {
         <label>Rayon<input name="shelfLocation" maxLength={100} /></label>
         <label className="full">Description<textarea maxLength={5000} value={description} onChange={(event) => setDescription(event.target.value)} /></label>
         <label className="full"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /> J’ai vérifié les informations avant l’enregistrement.</label>
-        <div className="actions"><Link className="button secondary" to="/products" onClick={cancelAssistant}>Annuler</Link><button type="submit" disabled={!confirmed || busy || duplicates.length > 0}>{busy ? "Enregistrement…" : "Confirmer et créer"}</button></div>
+        <div className="actions"><Link className="button secondary" to="/products" onClick={cancelAssistant}>Annuler</Link><button type="submit" disabled={!confirmed || busy || ocrBusy || duplicates.length > 0}>{busy ? "Enregistrement…" : "Confirmer et créer"}</button></div>
       </form>
     </main>
   );

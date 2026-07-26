@@ -1,8 +1,9 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { ProductListRow, ProductLookup, SafeUser } from "@maktaba/shared-types";
+import type { BarcodeResolution, ProductListRow, SafeUser } from "@maktaba/shared-types";
 import { ApiFailure, request } from "./api";
-import { useScanner } from "./use-scanner";
+import { useScannerContext } from "./scanner-context";
+import { BarcodeInput } from "./BarcodeInput";
 
 type ReceiptResult = { productId: number; quantityAdded: number; newStock: number; duplicate: boolean };
 
@@ -25,7 +26,7 @@ export default function StockReceiving({ user }: { user: SafeUser }) {
     setSuccess("");
     setUnknown("");
     try {
-      const found = (await request<ProductLookup>(`/products/lookup/${encodeURIComponent(code)}`)).product;
+      const found = (await request<BarcodeResolution>(`/products/resolve-barcode?code=${encodeURIComponent(code)}`)).product;
       if (found.productType !== "physical_product" || !found.trackStock)
         throw new Error("Ce produit ne gère pas de stock.");
       if (!found.isActive) throw new Error("Ce produit est inactif.");
@@ -42,7 +43,7 @@ export default function StockReceiving({ user }: { user: SafeUser }) {
     }
   }, []);
 
-  useScanner((code) => void lookup(code), { duplicateWindowMs: 0 });
+  useScannerContext("stock-receiving", "page", ({ code }) => lookup(code));
   useEffect(() => { focusScanner(); }, []);
 
   const confirmReceipt = async (event: FormEvent) => {
@@ -81,18 +82,9 @@ export default function StockReceiving({ user }: { user: SafeUser }) {
         <Link className="button secondary" to="/stock">Retour au stock</Link>
       </div>
       <section className="section-card receiving-scanner">
-        <label htmlFor="receiving-barcode">Code-barres du produit</label>
+        <BarcodeInput inputRef={input} mode="lookup" value={barcode}
+          onChange={setBarcode} onScan={lookup} label="Code-barres du produit" />
         <div className="inline-actions">
-          <input
-            id="receiving-barcode"
-            ref={input}
-            data-scanner-input="true"
-            autoComplete="off"
-            value={barcode}
-            onChange={(event) => setBarcode(event.target.value)}
-            onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void lookup(barcode); } }}
-            placeholder="Scannez ou saisissez un code-barres"
-          />
           <button type="button" onClick={() => void lookup(barcode)}>Rechercher</button>
         </div>
         <small>Le scanner reste prêt pour la réception suivante.</small>

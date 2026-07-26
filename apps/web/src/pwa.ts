@@ -1,4 +1,7 @@
-export const shouldRegisterServiceWorker = (production: boolean) => production;
+export const shouldRegisterServiceWorker = (
+  production: boolean,
+  nativeDesktop = false,
+) => production && !nativeDesktop;
 export async function clearDevelopmentServiceWorkers() {
   if (!("serviceWorker" in navigator)) return;
   const registrations = await navigator.serviceWorker.getRegistrations();

@@ -7,8 +7,7 @@ import type {
   PriceAdjustmentType,
   ProductListResponse,
   ProductListRow,
-  ProductLookup,
-  ProductUnitLookup,
+  BarcodeResolution,
   RegisterMovementListResponse,
   RegisterSession,
   RegisterSessionListResponse,
@@ -18,7 +17,7 @@ import type {
   SaleListResponse,
   SaleResult,
 } from "@maktaba/shared-types";
-import { ApiFailure, request } from "./api";
+import { request } from "./api";
 import { centsToMad, madToCents } from "./money";
 import CameraScanner from "./CameraScanner";
 import { enqueueGlobalScan, globalScanQueue } from "./global-scanner";
@@ -1086,16 +1085,12 @@ export function PosPage({ user }: { user: SafeUser }) {
         throw new Error("Le catalogue hors ligne n’est pas disponible. Actualisez le cache lorsque la connexion revient.");
       if (!status?.isOpen)
         throw new Error("La caisse doit être ouverte avant de commencer une vente.");
-      let serialized: ProductUnitLookup | undefined;
+      let resolved: BarcodeResolution | undefined;
       let cachedSerialized: Awaited<ReturnType<typeof findCachedSerializedUnit>>;
       if (connectionState === "online") {
-        try {
-          serialized = await request<ProductUnitLookup>(
-            `/product-units/lookup/${encodeURIComponent(code)}`,
-          );
-        } catch (e) {
-          if (!(e instanceof ApiFailure) || e.status !== 404) throw e;
-        }
+        resolved = await request<BarcodeResolution>(
+          `/products/resolve-barcode?code=${encodeURIComponent(code)}`,
+        );
       } else {
         cachedSerialized = await findCachedSerializedUnit(code);
         if (cachedSerialized) {
@@ -1116,15 +1111,15 @@ export function PosPage({ user }: { user: SafeUser }) {
             trackStock: true, isLowStock: false, isOutOfStock: false,
           }
         : undefined;
-      const product = serialized?.product ?? cachedProduct ??
+      const product = resolved?.product ?? cachedProduct ??
         (connectionState === "offline"
           ? await findCachedProductByCode(code)
-          : (await request<ProductLookup>(`/products/lookup/${encodeURIComponent(code)}`)).product);
+          : undefined);
       if (!product) throw new Error(`Produit introuvable · Code-barres : ${code}`);
       if (!product.isActive) throw new Error("Ce produit est archivé et ne peut pas être vendu.");
-      if (serialized || cachedSerialized) {
-        const unitBarcode = serialized?.unit.barcode ?? cachedSerialized!.barcode;
-        if (serialized && serialized.unit.status !== "available")
+      if (resolved?.unit || cachedSerialized) {
+        const unitBarcode = resolved?.unit?.barcode ?? cachedSerialized!.barcode;
+        if (resolved?.unit && resolved.unit.status !== "available")
           throw new Error("Cette unité n’est pas disponible.");
         setCart((value) => {
           if (value.some((line) => line.unitBarcodes?.includes(unitBarcode))) {

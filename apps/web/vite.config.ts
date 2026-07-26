@@ -32,11 +32,21 @@ export default defineConfig({
       },
       workbox: {
         navigateFallback: "/index.html",
+        navigateFallbackDenylist: [/^\/api(?:\/|$)/],
         runtimeCaching: [
           {
-            urlPattern: ({ url }) => url.pathname.startsWith("/api"),
+            urlPattern: ({ url }) =>
+              url.pathname === "/api" || url.pathname.startsWith("/api/"),
             handler: "NetworkOnly",
-            options: { cacheName: "api-network-only" },
+            method: "GET",
+            options: { cacheName: "authenticated-api-network-only" },
+          },
+          {
+            urlPattern: ({ url }) =>
+              url.pathname === "/api" || url.pathname.startsWith("/api/"),
+            handler: "NetworkOnly",
+            method: "POST",
+            options: { cacheName: "authenticated-api-network-only" },
           },
         ],
       },

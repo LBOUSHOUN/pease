@@ -79,7 +79,6 @@ export interface ProductListRow {
   publisher?: string | null;
   publicationYear?: number | null;
   bookLanguage?: string | null;
-  coverImageUrl?: string | null;
   productType: ProductType;
   inventoryMode?: "quantity" | "serialized";
   sku: string | null;
@@ -138,6 +137,23 @@ export interface ProductListResponse extends Pagination {
 }
 export interface ProductLookup {
   product: ProductListRow;
+}
+export type BarcodeMatchType =
+  | "serialized_unit"
+  | "original_barcode"
+  | "generated_barcode"
+  | "isbn13"
+  | "isbn10"
+  | "alternate_barcode";
+export interface BarcodeResolution {
+  matchType: BarcodeMatchType;
+  normalizedCode: string;
+  product: ProductListRow;
+  unit: {
+    id: number;
+    barcode: string;
+    status: "available" | "sold" | "damaged" | "lost" | "inactive";
+  } | null;
 }
 export interface StockSummary extends ProductListRow {
   stockValueCents?: number;

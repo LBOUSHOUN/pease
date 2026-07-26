@@ -58,7 +58,7 @@ describe("interactions accessibles", () => {
 
     render(<MemoryRouter><BookAssistant user={user} /></MemoryRouter>);
     const image = new File(["image"], "livre.jpg", { type: "image/jpeg" });
-    fireEvent.change(screen.getByLabelText("Photo de couverture"), {
+    fireEvent.change(screen.getByLabelText("Importer une image"), {
       target: { files: [image] },
     });
 
@@ -66,8 +66,8 @@ describe("interactions accessibles", () => {
       "src",
       "blob:couverture",
     );
-    expect(screen.getByText(/Elle ne sera ni enregistrée ni envoyée/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Retirer la photo" }));
+    expect(screen.getByText(/Elle ne sera ni envoyée ni enregistrée/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Effacer la photo" }));
     await waitFor(() =>
       expect(screen.queryByAltText("Aperçu local de la couverture")).not.toBeInTheDocument(),
     );

@@ -14,7 +14,15 @@ describe("desktop development launcher", () => {
       { url: "https://pease-production.up.railway.app/**" },
     ]);
     expect(JSON.stringify(http)).not.toContain("http://*");
-    expect(read("apps/web/.env.production").trim()).toBe("VITE_API_URL=https://pease-production.up.railway.app/api");
+    expect(read("apps/web/.env.production")).toContain("VITE_API_URL=/api");
+    expect(read("apps/web/.env.production")).toContain(
+      "VITE_DESKTOP_API_URL=https://pease-production.up.railway.app/api",
+    );
+    const caddy = read("apps/web/Caddyfile");
+    expect(caddy).toContain("handle /api/*");
+    expect(caddy).toContain(
+      "reverse_proxy https://pease-production.up.railway.app",
+    );
   });
   it("uses one strict canonical Vite URL across root, Vite and Tauri", () => {
     const rootPackage = JSON.parse(read("package.json"));
@@ -88,9 +96,8 @@ describe("shared application shell", () => {
   it("keeps a desktop scan while navigating globally to the POS", () => {
     const app = read("apps/web/src/App.tsx");
     const scanner = read("apps/web/src/global-scanner.ts");
-    expect(app).toContain(
-      "queueScanForPos(barcode, loc.pathname, navigate)",
-    );
+    expect(app).toContain('scannerContexts.dispatch({ code: barcode, source: "usb" })');
+    expect(app).toContain("queueScanForPos(code, loc.pathname, navigate)");
     expect(scanner.indexOf("enqueue(barcode)")).toBeLessThan(
       scanner.indexOf('navigate("/pos")'),
     );

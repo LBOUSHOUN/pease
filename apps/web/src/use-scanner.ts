@@ -16,10 +16,24 @@ export function useScanner(
         duplicateWindowMs,
       }),
       listener = (event: KeyboardEvent) => {
-        if (isEditable(event.target)) return;
-        buffer.key(event.key, event.timeStamp);
+        const dedicated =
+          event.target instanceof Element &&
+          Boolean(event.target.closest("[data-barcode-input='true']"));
+        if (isEditable(event.target) && !dedicated) return;
+        buffer.key(event.key, event.timeStamp, () => {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+          const focused = document.activeElement;
+          if (
+            focused instanceof HTMLElement &&
+            focused.matches("a[href],button,[role='button']")
+          ) {
+            focused.blur();
+          }
+        });
       };
-    window.addEventListener("keydown", listener);
-    return () => window.removeEventListener("keydown", listener);
+    window.addEventListener("keydown", listener, { capture: true });
+    return () => window.removeEventListener("keydown", listener, { capture: true });
   }, [duplicateWindowMs, maxIntervalMs, minLength]);
 }

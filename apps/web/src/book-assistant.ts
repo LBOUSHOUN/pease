@@ -1,13 +1,13 @@
 const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 const allowedExtensions = /\.(?:jpe?g|png|webp)$/i;
-export const MAX_BOOK_IMAGE_BYTES = 8 * 1024 * 1024;
+export const MAX_BOOK_IMAGE_BYTES = 15 * 1024 * 1024;
 
 export function validateBookImage(file: Pick<File, "name" | "size" | "type">) {
   if (!allowedTypes.has(file.type) || !allowedExtensions.test(file.name))
     return "Formats acceptés : JPG, JPEG, PNG ou WEBP.";
   if (file.size <= 0) return "Le fichier image est vide ou corrompu.";
   if (file.size > MAX_BOOK_IMAGE_BYTES)
-    return "L’image dépasse la taille maximale de 8 Mo.";
+    return "L’image dépasse la taille maximale de 15 Mo.";
   return null;
 }
 
@@ -70,4 +70,3 @@ export function ocrSuggestions(text: string) {
     rawText: lines.join("\n").slice(0, 3000),
   };
 }
-

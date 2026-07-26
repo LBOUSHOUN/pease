@@ -20,6 +20,7 @@ import type {
   Supplier,
   SupplierLedgerResponse,
   SupplierListResponse,
+  BarcodeResolution,
 } from "@maktaba/shared-types";
 import { request } from "./api";
 import { centsToMad, madToCents } from "./money";
@@ -30,7 +31,7 @@ import {
   supplierDebtAfterPayment,
   type PurchaseDraftLine,
 } from "./phase4-utils";
-import { useScanner } from "./use-scanner";
+import { useScannerContext } from "./scanner-context";
 import CameraScanner from "./CameraScanner";
 import { isAbortError } from "./request-error";
 
@@ -489,7 +490,11 @@ export function PurchaseForm({ user }: { user: SafeUser }) {
   const add = (p: ProductListRow) =>
     setCart((rows) =>
       rows.some((r) => r.productId === p.id)
-        ? rows
+        ? rows.map((row) =>
+            row.productId === p.id
+              ? { ...row, quantity: row.quantity + 1 }
+              : row,
+          )
         : [
             ...rows,
             {
@@ -500,9 +505,9 @@ export function PurchaseForm({ user }: { user: SafeUser }) {
             },
           ],
     );
-  useScanner((code) =>
-    request<{ product: ProductListRow }>(
-      `/products/lookup?code=${encodeURIComponent(code)}`,
+  useScannerContext("purchase-form", "page", ({ code }) =>
+    request<BarcodeResolution>(
+      `/products/resolve-barcode?code=${encodeURIComponent(code)}`,
     ).then((r) => {
       if (r.product.productType === "physical_product") add(r.product);
     }),
@@ -558,8 +563,8 @@ export function PurchaseForm({ user }: { user: SafeUser }) {
         <CameraScanner
           close={() => setCamera(false)}
           onScan={(code) =>
-            request<{ product: ProductListRow }>(
-              `/products/lookup?code=${encodeURIComponent(code)}`,
+            request<BarcodeResolution>(
+              `/products/resolve-barcode?code=${encodeURIComponent(code)}`,
             ).then((r) => {
               if (r.product.productType === "physical_product") add(r.product);
             })

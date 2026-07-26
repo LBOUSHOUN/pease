@@ -35,23 +35,37 @@ const messages: Record<number, string> = {
 
 type ApiBaseContext = {
   env?: Record<string, string | boolean | undefined>;
-  location?: { protocol?: string };
+  location?: { protocol?: string; origin?: string };
 };
 
 export function resolveApiBaseUrl(context: ApiBaseContext = {}): string {
   const env = context.env ?? import.meta.env;
-  const configured =
-    typeof env.VITE_API_URL === "string" ? env.VITE_API_URL.trim() : "";
-  if (configured) return configured.replace(/\/$/, "");
   const protocol = context.location?.protocol;
   const browserProtocol =
     typeof window !== "undefined" ? window.location.protocol : undefined;
   const activeProtocol = protocol ?? browserProtocol;
-  if (activeProtocol === "tauri:" || isTauri()) {
+  const native = activeProtocol === "tauri:" || isTauri();
+  if (native) {
+    const desktopConfigured =
+      typeof env.VITE_DESKTOP_API_URL === "string"
+        ? env.VITE_DESKTOP_API_URL.trim()
+        : "";
+    const legacyConfigured =
+      typeof env.VITE_API_URL === "string" &&
+      /^https?:\/\//u.test(env.VITE_API_URL.trim())
+        ? env.VITE_API_URL.trim()
+        : "";
+    const configured = desktopConfigured || legacyConfigured;
+    if (configured) return configured.replace(/\/$/, "");
     if (env.DEV === true) return "http://127.0.0.1:3000/api";
-    throw new Error("VITE_API_URL doit être configurée pour l’application de bureau.");
+    throw new Error(
+      "VITE_DESKTOP_API_URL doit être configurée pour l’application de bureau.",
+    );
   }
-  return "/api";
+  const configured =
+    typeof env.VITE_API_URL === "string" ? env.VITE_API_URL.trim() : "";
+  if (!configured || /^https?:\/\//u.test(configured)) return "/api";
+  return configured.replace(/\/$/, "");
 }
 
 export function buildApiUrl(path: string, context: ApiBaseContext = {}): string {
@@ -170,6 +184,17 @@ export async function request<T>(
     } catch {
       parsed = undefined;
     }
+  }
+  if (response.ok && text && parsed === undefined) {
+    throw new ApiFailure(
+      {
+        code: "INVALID_RESPONSE",
+        message: "Le serveur a renvoyé une réponse invalide.",
+      },
+      502,
+      undefined,
+      "http",
+    );
   }
   if (!response.ok) {
     const retry = response.headers.get("retry-after");

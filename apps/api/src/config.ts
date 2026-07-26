@@ -15,7 +15,7 @@ const schema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),
-  TRUST_PROXY: z.enum(["true", "false"]).default("false"),
+  TRUST_PROXY: z.enum(["true", "false"]),
   LOG_LEVEL: z.string().default("info"),
   LOGIN_RATE_LIMIT: z.coerce.number().int().min(1).default(8),
 });
@@ -23,5 +23,8 @@ export const config = schema.parse({
   ...process.env,
   API_HOST: process.env.API_HOST ?? "0.0.0.0",
   API_PORT: process.env.PORT ?? process.env.API_PORT ?? "3000",
+  TRUST_PROXY:
+    process.env.TRUST_PROXY ??
+    (process.env.NODE_ENV === "production" ? "true" : "false"),
 });
 

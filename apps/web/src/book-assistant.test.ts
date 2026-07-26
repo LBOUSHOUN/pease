@@ -13,7 +13,7 @@ describe("assistant livre", () => {
     expect(validateBookImage({ name: "livre.jpg", type: "image/jpeg", size: 10 })).toBeNull();
     expect(validateBookImage({ name: "livre.svg", type: "image/svg+xml", size: 10 })).toContain("Formats");
     expect(validateBookImage({ name: "livre.jpg.exe", type: "image/jpeg", size: 10 })).toContain("Formats");
-    expect(validateBookImage({ name: "livre.webp", type: "image/webp", size: 9 * 1024 * 1024 })).toContain("8 Mo");
+    expect(validateBookImage({ name: "livre.webp", type: "image/webp", size: 16 * 1024 * 1024 })).toContain("15 Mo");
   });
   it("normalise et vérifie ISBN-10 et ISBN-13", () => {
     expect(isValidIsbn10("0-306-40615-2")).toBe(true);
@@ -37,4 +37,3 @@ describe("assistant livre", () => {
     expect(findIsbnInText("aucun code lisible")).toBeNull();
   });
 });
-

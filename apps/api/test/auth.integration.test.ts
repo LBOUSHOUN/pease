@@ -203,6 +203,17 @@ function cookie(response: { headers: Record<string, unknown> }) {
 }
 
 describe("online authentication", () => {
+  it("uses a host-only secure SameSite=Lax browser cookie in production", async () => {
+    const { sessionCookieOptions } = await import("../src/auth.js");
+    expect(sessionCookieOptions(true)).toEqual({
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      path: "/",
+    });
+    expect(sessionCookieOptions(true)).not.toHaveProperty("domain");
+  });
+
   it("answers health and database readiness", async () => {
     expect((await app.inject("/health")).statusCode).toBe(200);
     expect((await app.inject("/ready")).statusCode).toBe(200);
@@ -791,6 +802,30 @@ describe("online catalog and stock", () => {
           })
         ).statusCode,
       ).toBe(200);
+    for (const [code, matchType] of [
+      [created.manufacturerBarcode, "original_barcode"],
+      [created.internalBarcode, "generated_barcode"],
+    ]) {
+      const resolved = await app.inject({
+        url: `/api/products/resolve-barcode?code=${encodeURIComponent(code)}`,
+        headers: { cookie: session },
+      });
+      expect(resolved.statusCode).toBe(200);
+      expect(resolved.json()).toMatchObject({
+        matchType,
+        normalizedCode: code,
+        product: { id: created.id },
+        unit: null,
+      });
+    }
+    expect(
+      (
+        await app.inject({
+          url: `/api/products/resolve-barcode?code=${encodeURIComponent(`${created.manufacturerBarcode}9`)}`,
+          headers: { cookie: session },
+        })
+      ).statusCode,
+    ).toBe(404);
     const list = await app.inject({
       url: "/api/products?search=CAH-1&productType=physical_product&pageSize=1",
       headers: { cookie: session },

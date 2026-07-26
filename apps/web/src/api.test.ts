@@ -12,19 +12,22 @@ describe("API client", () => {
   });
 
   it("requires an explicit API URL for production desktop builds", () => {
-    expect(() => resolveApiBaseUrl({ env: {}, location: { protocol: "tauri:" } })).toThrow("VITE_API_URL");
+    expect(() => resolveApiBaseUrl({ env: {}, location: { protocol: "tauri:" } })).toThrow("VITE_DESKTOP_API_URL");
   });
 
-  it("uses the configured VITE_API_URL when provided", () => {
+  it("uses a configured same-origin API path when provided", () => {
     expect(
       resolveApiBaseUrl({
-        env: { VITE_API_URL: "https://api.example.com/api" },
+        env: { VITE_API_URL: "/custom-api" },
         location: { protocol: "http:" },
       }),
-    ).toBe("https://api.example.com/api");
+    ).toBe("/custom-api");
   });
   it("builds the exact installed desktop health URL", () => {
-    expect(buildApiUrl("/health", { env: { VITE_API_URL: "http://127.0.0.1:3000/api" } })).toBe("http://127.0.0.1:3000/api/health");
+    expect(buildApiUrl("/health", {
+      env: { VITE_DESKTOP_API_URL: "http://127.0.0.1:3000/api" },
+      location: { protocol: "tauri:" },
+    })).toBe("http://127.0.0.1:3000/api/health");
   });
   it("sends empty logout without JSON body or content type", async () => {
     const fetch = vi
@@ -90,6 +93,46 @@ describe("API client", () => {
         message: "Impossible de joindre le serveur. Vérifiez votre connexion.",
       }),
     );
+  });
+  it("rejects an HTML SPA fallback instead of treating login as successful", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("<!doctype html><title>Application</title>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        }),
+      ),
+    );
+    await expect(request("/auth/login", { method: "POST" })).rejects.toMatchObject({
+      status: 502,
+      data: { code: "INVALID_RESPONSE" },
+    });
+  });
+  it("forces production browsers through the same-origin API proxy", () => {
+    expect(
+      resolveApiBaseUrl({
+        env: {
+          VITE_API_URL: "https://pease-production.up.railway.app/api",
+        },
+        location: {
+          protocol: "https:",
+          origin: "https://doublelibrary.online",
+        },
+      }),
+    ).toBe("/api");
+  });
+  it("keeps native desktop on its explicit Railway API origin", () => {
+    expect(
+      resolveApiBaseUrl({
+        env: {
+          VITE_API_URL: "/api",
+          VITE_DESKTOP_API_URL:
+            "https://pease-production.up.railway.app/api",
+        },
+        location: { protocol: "tauri:" },
+      }),
+    ).toBe("https://pease-production.up.railway.app/api");
   });
   it.each([
     new DOMException("signal is aborted without reason", "AbortError"),

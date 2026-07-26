@@ -24,6 +24,7 @@ import {
   stockFiltersSchema,
   stockMovementFiltersSchema,
   barcodeValueSchema,
+  barcodeResolveQuerySchema,
   bookDuplicateQuerySchema,
 } from "@maktaba/validation";
 import { db } from "./db/index.js";
@@ -103,7 +104,6 @@ const pf = {
   publisher: products.publisher,
   publicationYear: products.publicationYear,
   bookLanguage: products.bookLanguage,
-  coverImageUrl: products.coverImageUrl,
   productType: products.productType,
   inventoryMode: products.inventoryMode,
   sku: products.sku,
@@ -137,6 +137,99 @@ const pf = {
   updatedAt: products.updatedAt,
 };
 export async function registerPhase2(app: FastifyInstance) {
+  app.get(
+    "/api/products/resolve-barcode",
+    { preHandler: requirePermission("products.view") },
+    async (req, reply) => {
+      const parsed = barcodeResolveQuerySchema.safeParse(req.query);
+      if (!parsed.success)
+        return bad(reply, req.id, parsed.error.flatten().fieldErrors);
+      const normalizedCode = parsed.data.code
+        .replace(/[\r\n\t]+$/u, "")
+        .trim();
+      const comparableCode = normalizedCode.toLocaleLowerCase("en-US");
+      const compactIsbn = normalizedCode.replace(/[\s-]/gu, "").toUpperCase();
+
+      const unitRows = await db
+        .select({
+          unitId: productUnits.id,
+          unitBarcode: productUnits.barcode,
+          unitStatus: productUnits.status,
+          product: pf,
+        })
+        .from(productUnits)
+        .innerJoin(products, eq(productUnits.productId, products.id))
+        .leftJoin(categories, eq(products.categoryId, categories.id))
+        .where(
+          raw`lower(trim(${productUnits.barcode})) = ${comparableCode}`,
+        );
+      const productRows = await db
+        .select(pf)
+        .from(products)
+        .leftJoin(categories, eq(products.categoryId, categories.id))
+        .where(
+          or(
+            raw`lower(trim(${products.manufacturerBarcode})) = ${comparableCode}`,
+            raw`lower(trim(${products.internalBarcode})) = ${comparableCode}`,
+            raw`upper(replace(replace(trim(${products.isbn13}), '-', ''), ' ', '')) = ${compactIsbn}`,
+            raw`upper(replace(replace(trim(${products.isbn10}), '-', ''), ' ', '')) = ${compactIsbn}`,
+          ),
+        );
+
+      const productIds = new Set<number>([
+        ...unitRows.map((row) => row.product.id),
+        ...productRows.map((row) => row.id),
+      ]);
+      if (productIds.size === 0)
+        return absent(reply, req.id, "Aucun produit ne correspond au code-barres scanné.");
+      if (productIds.size > 1)
+        return reply.code(409).send({
+          code: "BARCODE_CONFLICT",
+          message: "Ce code-barres correspond à plusieurs produits.",
+          requestId: req.id,
+        });
+
+      const unitRow = unitRows[0];
+      const product = unitRow?.product ?? productRows[0]!;
+      if (!product.isActive)
+        return reply.code(409).send({
+          code: "PRODUCT_INACTIVE",
+          message: "Ce produit est inactif.",
+          requestId: req.id,
+        });
+      let matchType:
+        | "serialized_unit"
+        | "original_barcode"
+        | "generated_barcode"
+        | "isbn13"
+        | "isbn10" = "generated_barcode";
+      if (unitRow) matchType = "serialized_unit";
+      else if (product.manufacturerBarcode?.trim().toLocaleLowerCase("en-US") === comparableCode)
+        matchType = "original_barcode";
+      else if (product.internalBarcode.trim().toLocaleLowerCase("en-US") === comparableCode)
+        matchType = "generated_barcode";
+      else if (product.isbn13?.replace(/[\s-]/gu, "").toUpperCase() === compactIsbn)
+        matchType = "isbn13";
+      else if (product.isbn10?.replace(/[\s-]/gu, "").toUpperCase() === compactIsbn)
+        matchType = "isbn10";
+
+      return {
+        matchType,
+        normalizedCode:
+          matchType === "isbn10" || matchType === "isbn13"
+            ? compactIsbn
+            : normalizedCode,
+        product: safe(req, product),
+        unit: unitRow
+          ? {
+              id: unitRow.unitId,
+              barcode: unitRow.unitBarcode,
+              status: unitRow.unitStatus,
+            }
+          : null,
+      };
+    },
+  );
   app.get(
     "/api/products/book-duplicates",
     { preHandler: requirePermission("products.use_book_assistant") },

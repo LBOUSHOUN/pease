@@ -139,7 +139,6 @@ const productBase = z.object({
   publisher: z.string().trim().max(200).optional().nullable(),
   publicationYear: z.number().int().min(1000).max(2200).optional().nullable(),
   bookLanguage: z.string().trim().max(40).optional().nullable(),
-  coverImageUrl: z.string().trim().url().max(1000).refine((value) => value.startsWith("https://"), "L’image doit utiliser HTTPS.").optional().nullable(),
   productType: z.enum(["physical_product", "service"]),
   inventoryMode: z.enum(["quantity", "serialized"]).default("quantity"),
   sku: optionalCode,
@@ -152,7 +151,7 @@ const productBase = z.object({
   unit: z.string().trim().min(1).max(40).default("unité"),
   shelfLocation: optionalCode,
   trackStock: z.boolean().default(true),
-});
+}).strict();
 export const productCreateSchema = productBase
   .extend({ initialQuantity: z.number().int().min(0).max(100000).default(0) })
   .superRefine((value, ctx) => {
@@ -172,7 +171,7 @@ export const bookDuplicateQuerySchema = z.object({
   isbn13: isbn13Schema.optional(),
   title: z.string().trim().max(200).default(""),
   author: z.string().trim().max(300).default(""),
-}).refine((value) => value.isbn10 || value.isbn13 || value.title, {
+}).strict().refine((value) => value.isbn10 || value.isbn13 || value.title, {
   message: "Un ISBN ou un titre est requis.",
 });
 
@@ -206,6 +205,11 @@ export const identifierLookupSchema = z.object({
   code: z.string().trim().min(2).max(200),
   saleReady: queryBoolean.default(false),
 });
+export const barcodeResolveQuerySchema = z
+  .object({
+    code: barcodeValueSchema,
+  })
+  .strict();
 export const stockAdjustmentSchema = z
   .object({
     productId: z.number().int().positive(),

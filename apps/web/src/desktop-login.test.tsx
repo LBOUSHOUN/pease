@@ -76,7 +76,7 @@ describe("desktop login persistence", () => {
     let finish!: (value: typeof response) => void;
     mocks.request.mockImplementationOnce(
       () => new Promise<typeof response>((resolve) => (finish = resolve)),
-    );
+    ).mockResolvedValue(response);
     mocks.save.mockResolvedValue(undefined);
     render(<Login done={vi.fn()} notice="" />);
     fireEvent.change(screen.getByLabelText("Identifiant ou e-mail"), {

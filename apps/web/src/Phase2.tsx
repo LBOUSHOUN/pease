@@ -12,17 +12,18 @@ import type {
   ProductDetail,
   ProductListResponse,
   ProductListRow,
-  ProductLookup,
   StockListResponse,
   StockMovementListResponse,
   SafeUser,
   RegisterStatus,
+  BarcodeResolution,
 } from "@maktaba/shared-types";
-import { downloadFile, request } from "./api";
+import { ApiFailure, downloadFile, request } from "./api";
 import { centsToMad, madToCents } from "./money";
 import { calculateStockAfter } from "./stock-utils";
-import { useScanner } from "./use-scanner";
 import { enqueueGlobalScan } from "./global-scanner";
+import { useScannerContext } from "./scanner-context";
+import { BarcodeInput } from "./BarcodeInput";
 import { isAbortError } from "./request-error";
 import { applyBarcodePrefill, readBarcodePrefill } from "./product-create-flow";
 import { isTauriRuntime, markCachedProductArchived, readQueueAsync, refreshOfflineCache } from "./offline-pos";
@@ -353,7 +354,13 @@ export function CategoryForm({ edit = false }: { edit?: boolean }) {
     </main>
   );
 }
-export function ProductsPage({ user }: { user: SafeUser }) {
+export function ProductsPage({
+  user,
+  nativeBookAssistantAvailable = false,
+}: {
+  user: SafeUser;
+  nativeBookAssistantAvailable?: boolean;
+}) {
   const [search, setSearch] = useState(""),
     [type, setType] = useState(""),
     [categoryId, setCategoryId] = useState(""),
@@ -405,8 +412,8 @@ export function ProductsPage({ user }: { user: SafeUser }) {
     try {
       setFound(
         (
-          await request<ProductLookup>(
-            `/products/lookup/${encodeURIComponent(code)}`,
+          await request<BarcodeResolution>(
+            `/products/resolve-barcode?code=${encodeURIComponent(code)}`,
           )
         ).product,
       );
@@ -416,7 +423,7 @@ export function ProductsPage({ user }: { user: SafeUser }) {
       setError(e instanceof Error ? e.message : "Produit introuvable.");
     }
   };
-  useScanner((code) => void lookup(code));
+  useScannerContext("products-page", "page", ({ code }) => lookup(code));
   const exportSerializedUnits = async () => {
     if (exporting) return;
     setExporting(true);
@@ -445,7 +452,8 @@ export function ProductsPage({ user }: { user: SafeUser }) {
             Nouveau produit
           </Link>
         )}
-        {has(user, "products.use_book_assistant") && (
+        {nativeBookAssistantAvailable &&
+          has(user, "products.use_book_assistant") && (
           <Link className="button secondary" to="/products/new/book-assistant">
             Ajouter un livre
           </Link>
@@ -698,6 +706,22 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
       setGenerating(false);
     }
   };
+  const validateScannedBarcode = async (code: string) => {
+    if (offline) return;
+    try {
+      const match = await request<BarcodeResolution>(
+        `/products/resolve-barcode?code=${encodeURIComponent(code)}`,
+      );
+      setError(
+        edit && match.product.id === Number(id)
+          ? ""
+          : "Ce code-barres est déjà utilisé par un autre produit.",
+      );
+    } catch (reason) {
+      if (reason instanceof ApiFailure && reason.status === 404) setError("");
+      else setError(reason instanceof Error ? reason.message : "Impossible de vérifier ce code-barres.");
+    }
+  };
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (busy) return;
@@ -834,24 +858,22 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
           />
         </label>
         <h2 className="form-section-title">Code-barres</h2>
-        <label className="barcode-field form-section-card">
-          Code-barres
-          <input
-            ref={barcodeInput}
-            data-scanner-input="true"
-            autoComplete="off"
+        <div className="barcode-field form-section-card">
+          <BarcodeInput
+            inputRef={barcodeInput}
+            mode="capture"
             value={form.manufacturerBarcode}
-            onChange={(e) => set("manufacturerBarcode", e.target.value)}
+            onChange={(value) => set("manufacturerBarcode", value)}
+            onScan={validateScannedBarcode}
           />
           <span className="inline-actions">
-            <button type="button" className="secondary" onClick={() => barcodeInput.current?.focus()}>Scanner</button>
             <button type="button" className="secondary barcode-generate-action" disabled={generating || busy || offline || form.productType === "service"} onClick={generateBarcode}>{generating ? "Génération…" : "Générer"}</button>
             {user.permissions.includes("labels.print") && <button type="button" className="secondary barcode-print-action" disabled={!edit || !id || !form.name.trim()} onClick={() => id && nav(`/products/${id}/label`)}>Imprimer l’étiquette</button>}
           </span>
           {!edit && user.permissions.includes("labels.print") && <small>Enregistrez d’abord le produit pour imprimer l’étiquette.</small>}
           {offline && <small className="field-error">La génération d’un code-barres nécessite une connexion au serveur.</small>}
           <small>Scannez le code existant ou générez un code-barres interne.</small>
-        </label>
+        </div>
         <h2 className="form-section-title">Tarification</h2>
         <label>
           Prix d'achat MAD
@@ -1112,8 +1134,27 @@ export function StockPage({ user }: { user: SafeUser }) {
     [out, setOut] = useState(false),
     [page, setPage] = useState(1),
     [data, setData] = useState<StockListResponse>(),
+    [scannedProduct, setScannedProduct] = useState<ProductListRow>(),
     [error, setError] = useState(""),
     query = useDebounced(search);
+  useScannerContext("stock-page", "page", async ({ code }) => {
+    try {
+      const result = await request<BarcodeResolution>(
+        `/products/resolve-barcode?code=${encodeURIComponent(code)}`,
+      );
+      setScannedProduct(result.product);
+      setSearch(result.product.name);
+      setPage(1);
+      setError("");
+    } catch (reason) {
+      setScannedProduct(undefined);
+      setError(
+        reason instanceof ApiFailure && reason.status === 404
+          ? "Aucun produit ne correspond au code-barres scanné."
+          : reason instanceof Error ? reason.message : "Code-barres inconnu.",
+      );
+    }
+  });
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
@@ -1172,6 +1213,11 @@ export function StockPage({ user }: { user: SafeUser }) {
         </div>
       </div>
       <ErrorBox value={error} />
+      {scannedProduct && <div className="notice" role="status" aria-live="polite">
+        Produit trouvé : <strong>{scannedProduct.name}</strong> · Stock {scannedProduct.currentStock}
+        {" "}· Seuil {scannedProduct.minimumStock}
+        {scannedProduct.inventoryMode === "serialized" && " · Suivi par unité"}
+      </div>}
       <div className="filters">
         <input
           value={search}
@@ -1265,7 +1311,7 @@ export function StockPage({ user }: { user: SafeUser }) {
             </thead>
             <tbody>
               {data.rows.map((x) => (
-                <tr key={x.id}>
+                <tr key={x.id} className={scannedProduct?.id === x.id ? "scanner-match" : undefined}>
                   <td>{x.name}</td>
                   <td>{x.categoryName}</td>
                   <td>{x.sku || "—"}</td>
@@ -1335,8 +1381,8 @@ export function StockAdjust() {
     try {
       setProduct(
         (
-          await request<ProductLookup>(
-            `/products/lookup/${encodeURIComponent(code)}`,
+          await request<BarcodeResolution>(
+            `/products/resolve-barcode?code=${encodeURIComponent(code)}`,
           )
         ).product,
       );
@@ -1345,7 +1391,23 @@ export function StockAdjust() {
       setError(e instanceof Error ? e.message : "Produit introuvable.");
     }
   };
-  useScanner((code) => void lookup(code));
+  useScannerContext("stock-adjust-page", "page", async ({ code }) => {
+    const resolved = await request<BarcodeResolution>(
+      `/products/resolve-barcode?code=${encodeURIComponent(code)}`,
+    );
+    if (
+      type === "inventory_adjustment" &&
+      product?.id === resolved.product.id &&
+      resolved.matchType !== "serialized_unit"
+    ) {
+      setQuantity((value) => value + 1);
+      setError("");
+      return;
+    }
+    setProduct(resolved.product);
+    setQuantity(1);
+    setError("");
+  });
   const increase =
       ["opening_stock", "stock_in"].includes(type) ||
       (["manual_adjustment", "inventory_adjustment"].includes(type) &&

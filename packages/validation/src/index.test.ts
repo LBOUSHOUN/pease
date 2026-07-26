@@ -98,6 +98,13 @@ describe("online validation", () => {
       wholesaleMinQuantity: 1, minimumStock: 0, unit: "unité", shelfLocation: "", trackStock: true,
     };
     expect(productCreateSchema.safeParse({ ...base, initialQuantity: 50 }).success).toBe(true);
+    expect(
+      productCreateSchema.safeParse({
+        ...base,
+        initialQuantity: 0,
+        imageBase64: "data:image/jpeg;base64,secret",
+      }).success,
+    ).toBe(false);
     expect(productCreateSchema.safeParse({ ...base, inventoryMode: "serialized", initialQuantity: 1 }).success).toBe(false);
     const service = productCreateSchema.parse({ ...base, productType: "service", initialQuantity: 50 });
     expect(service.initialQuantity).toBe(0);

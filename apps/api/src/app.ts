@@ -36,7 +36,8 @@ import { registerPhase6 } from "./phase6.js";
 export async function buildApp() {
   const app = Fastify({
     logger: { level: config.LOG_LEVEL },
-    trustProxy: config.TRUST_PROXY === "true",
+    trustProxy:
+      config.NODE_ENV === "production" || config.TRUST_PROXY === "true",
     logController: new LogController({
       disableRequestLogging: config.NODE_ENV === "test",
     }),

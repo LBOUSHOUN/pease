@@ -6,14 +6,22 @@ import {
   clearDevelopmentServiceWorkers,
   shouldRegisterServiceWorker,
 } from "./pwa";
-if (shouldRegisterServiceWorker(import.meta.env.PROD)) {
-  void import("virtual:pwa-register").then(({ registerSW }) =>
-    registerSW({
+import { isNativeDesktop } from "./desktop-session";
+if (shouldRegisterServiceWorker(import.meta.env.PROD, isNativeDesktop())) {
+  void import("virtual:pwa-register").then(({ registerSW }) => {
+    const update = registerSW({
       onNeedRefresh() {
         window.dispatchEvent(new Event("pwa-update"));
+        if (
+          window.confirm(
+            "Une nouvelle version de Double Library est disponible. Mettre à jour maintenant ?",
+          )
+        ) {
+          void update(true);
+        }
       },
-    }),
-  );
+    });
+  });
 } else {
   void clearDevelopmentServiceWorkers();
 }

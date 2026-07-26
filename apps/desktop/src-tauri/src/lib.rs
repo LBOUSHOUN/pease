@@ -1,5 +1,6 @@
 mod db;
 mod exports;
+mod ocr;
 mod operations;
 mod reports;
 mod workforce;
@@ -8,6 +9,7 @@ use argon2::{
     Argon2,
 };
 use db::Database;
+use ocr::{BookOcrResult, OcrFailure, OcrRuntime, OcrStatus};
 use rand_core::OsRng;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -17,6 +19,47 @@ use tauri::{Manager, State};
 const DESKTOP_TOKEN_SERVICE: &str = "com.pc.doublelibrary";
 const LEGACY_DESKTOP_TOKEN_SERVICES: [&str; 2] = ["com.pc.maktaba-pos", "com.maktaba.pos"];
 const DESKTOP_TOKEN_ACCOUNT: &str = "desktop-session";
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppRuntimeStatus {
+    is_native: bool,
+    is_packaged: bool,
+    ocr_available: bool,
+}
+
+fn is_packaged_build() -> bool {
+    !cfg!(debug_assertions)
+}
+
+#[tauri::command]
+fn get_ocr_status(ocr: State<OcrRuntime>) -> OcrStatus {
+    ocr.status()
+}
+
+#[tauri::command]
+fn get_app_runtime_status(ocr: State<OcrRuntime>) -> AppRuntimeStatus {
+    AppRuntimeStatus {
+        is_native: true,
+        is_packaged: is_packaged_build(),
+        ocr_available: ocr.is_available(),
+    }
+}
+
+#[tauri::command]
+async fn extract_book_metadata_from_image(
+    image_bytes: Vec<u8>,
+    mime_type: String,
+    title_region: Option<bool>,
+    ocr: State<'_, OcrRuntime>,
+) -> Result<BookOcrResult, OcrFailure> {
+    let runtime = ocr.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime.extract(&image_bytes, &mime_type, title_region.unwrap_or(false))
+    })
+    .await
+    .map_err(|_| OcrFailure::new("OCR_PROCESS_FAILED"))?
+}
 
 fn validate_desktop_session_token(token: &str) -> Result<(), String> {
     if token.len() < 32
@@ -1158,7 +1201,19 @@ fn list_cached_products(
 #[tauri::command]
 fn lookup_cached_product(code: String, db: State<Database>) -> Result<Option<Value>, String> {
     let c = db.connect()?;
-    let raw: Option<String> = c.query_row("SELECT payload_json FROM offline_products WHERE barcode=?1 OR internal_barcode=?1 OR sku=?1 LIMIT 1", [code.trim()], |r| r.get(0)).optional().map_err(db_err)?;
+    let normalized = code.trim();
+    let compact_isbn = normalized.replace([' ', '-'], "").to_uppercase();
+    let raw: Option<String> = c.query_row(
+        "SELECT payload_json FROM offline_products
+         WHERE is_active=1 AND (
+           lower(trim(coalesce(barcode,'')))=lower(?1)
+           OR lower(trim(coalesce(internal_barcode,'')))=lower(?1)
+           OR upper(replace(replace(coalesce(json_extract(payload_json,'$.isbn10'),''),'-',''),' ',''))=?2
+           OR upper(replace(replace(coalesce(json_extract(payload_json,'$.isbn13'),''),'-',''),' ',''))=?2
+         ) LIMIT 1",
+        params![normalized, compact_isbn],
+        |r| r.get(0),
+    ).optional().map_err(db_err)?;
     raw.map(|s| serde_json::from_str(&s).map_err(|_| "Cache produit corrompu".to_string()))
         .transpose()
 }
@@ -1498,12 +1553,18 @@ pub fn run() {
         .setup(|app| {
             let db = Database::new(app.handle())?;
             app.manage(db);
+            ocr::cleanup_stale_temp_dirs();
+            let resource_dir = app.path().resource_dir()?;
+            app.manage(OcrRuntime::new(&resource_dir));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             save_desktop_session_token,
             load_desktop_session_token,
             delete_desktop_session_token,
+            get_ocr_status,
+            get_app_runtime_status,
+            extract_book_metadata_from_image,
             save_offline_auth_snapshot,
             load_offline_auth_snapshot,
             clear_offline_auth_snapshot,
@@ -1568,6 +1629,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn packaged_status_follows_the_rust_release_profile() {
+        assert_eq!(is_packaged_build(), !cfg!(debug_assertions));
+    }
     #[test]
     fn password_roundtrip() {
         let h = hash_password("Secret123").unwrap();

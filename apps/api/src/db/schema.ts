@@ -136,7 +136,6 @@ export const products = pgTable(
     publisher: text(),
     publicationYear: integer("publication_year"),
     bookLanguage: text("book_language"),
-    coverImageUrl: text("cover_image_url"),
     productType: text("product_type").notNull(),
     inventoryMode: text("inventory_mode").notNull().default("quantity"),
     sku: text().unique(),
