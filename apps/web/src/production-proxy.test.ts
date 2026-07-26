@@ -13,4 +13,15 @@ describe("production Railway web proxy", () => {
     expect(server).not.toContain("DATABASE_URL");
     expect(server).not.toContain("SESSION_PEPPER");
   });
+  it("requests an uncompressed upstream body and never forwards stale encoding metadata", () => {
+    expect(server).toContain('headers.set("accept-encoding", "identity")');
+    expect(server).toContain('name !== "content-encoding"');
+    expect(server).toContain('"content-length"');
+    expect(server).toContain('"transfer-encoding"');
+  });
+  it("preserves response JSON and authentication cookies", () => {
+    expect(server).toContain("for await (const chunk of upstreamResponse.body)");
+    expect(server).toContain("upstreamResponse.headers.getSetCookie()");
+    expect(server).toContain('responseHeaders["set-cookie"] = cookies');
+  });
 });

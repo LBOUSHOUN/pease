@@ -23,6 +23,7 @@ describe("desktop development launcher", () => {
     expect(caddy).toContain(
       "reverse_proxy https://pease-production.up.railway.app",
     );
+    expect(caddy).toContain("header_up Accept-Encoding identity");
   });
   it("uses one strict canonical Vite URL across root, Vite and Tauri", () => {
     const rootPackage = JSON.parse(read("package.json"));
@@ -111,6 +112,8 @@ describe("shared application shell", () => {
     expect(caddy).toContain(
       "reverse_proxy https://pease-production.up.railway.app",
     );
+    expect(caddy).toContain("header_up Accept-Encoding identity");
+    expect(caddy).toContain("encode zstd gzip");
   });
 
   it("keeps dashboard metric labels and values in separate elements", () => {

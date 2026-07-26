@@ -45,6 +45,10 @@ async function proxy(request, response) {
       headers.set(name, Array.isArray(value) ? value.join(", ") : value);
   }
   headers.set("host", target.host);
+  // Node's fetch transparently decodes compressed upstream bodies. Requesting
+  // identity prevents a decoded body from being forwarded with a stale
+  // Content-Encoding header.
+  headers.set("accept-encoding", "identity");
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
   const upstreamResponse = await fetch(target, {
     method: request.method,
@@ -55,7 +59,12 @@ async function proxy(request, response) {
   });
   const responseHeaders = {};
   upstreamResponse.headers.forEach((value, name) => {
-    if (!hopByHop.has(name) && name !== "set-cookie") responseHeaders[name] = value;
+    if (
+      !hopByHop.has(name) &&
+      name !== "set-cookie" &&
+      name !== "content-encoding"
+    )
+      responseHeaders[name] = value;
   });
   const cookies = upstreamResponse.headers.getSetCookie();
   if (cookies.length) responseHeaders["set-cookie"] = cookies;
