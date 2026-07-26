@@ -20,6 +20,7 @@ import type {
   Supplier,
   SupplierLedgerResponse,
   SupplierListResponse,
+  BarcodeResolution,
 } from "@maktaba/shared-types";
 import { request } from "./api";
 import { centsToMad, madToCents } from "./money";
@@ -30,8 +31,9 @@ import {
   supplierDebtAfterPayment,
   type PurchaseDraftLine,
 } from "./phase4-utils";
-import { useScanner } from "./use-scanner";
+import { useScannerContext } from "./scanner-context";
 import CameraScanner from "./CameraScanner";
+import { isAbortError } from "./request-error";
 
 const allowed = (user: SafeUser, permission: string) =>
   user.permissions.includes(permission);
@@ -56,15 +58,23 @@ export function SuppliersPage({ user }: { user: SafeUser }) {
   const query = useDebounced(search);
   useEffect(() => {
     const controller = new AbortController();
+    let active = true;
     request<SupplierListResponse>(
       `/suppliers?search=${encodeURIComponent(query)}&status=${status}&pageSize=50`,
       { signal: controller.signal },
     )
-      .then(setData)
-      .catch((e) => {
-        if (e.name !== "AbortError") setError(errorMessage(e));
+      .then((result) => {
+        if (!active) return;
+        setData(result);
+        setError("");
+      })
+      .catch((e: unknown) => {
+        if (active && !isAbortError(e)) setError(errorMessage(e));
       });
-    return () => controller.abort();
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, [query, status]);
   return (
     <main className="page">
@@ -377,15 +387,23 @@ export function PurchasesPage() {
   const query = useDebounced(search);
   useEffect(() => {
     const c = new AbortController();
+    let active = true;
     request<PurchaseListResponse>(
       `/purchases?search=${encodeURIComponent(query)}&pageSize=50`,
       { signal: c.signal },
     )
-      .then(setData)
-      .catch((e) => {
-        if (e.name !== "AbortError") setError(errorMessage(e));
+      .then((result) => {
+        if (!active) return;
+        setData(result);
+        setError("");
+      })
+      .catch((e: unknown) => {
+        if (active && !isAbortError(e)) setError(errorMessage(e));
       });
-    return () => c.abort();
+    return () => {
+      active = false;
+      c.abort();
+    };
   }, [query]);
   return (
     <main className="page">
@@ -472,7 +490,11 @@ export function PurchaseForm({ user }: { user: SafeUser }) {
   const add = (p: ProductListRow) =>
     setCart((rows) =>
       rows.some((r) => r.productId === p.id)
-        ? rows
+        ? rows.map((row) =>
+            row.productId === p.id
+              ? { ...row, quantity: row.quantity + 1 }
+              : row,
+          )
         : [
             ...rows,
             {
@@ -483,9 +505,9 @@ export function PurchaseForm({ user }: { user: SafeUser }) {
             },
           ],
     );
-  useScanner((code) =>
-    request<{ product: ProductListRow }>(
-      `/products/lookup?code=${encodeURIComponent(code)}`,
+  useScannerContext("purchase-form", "page", ({ code }) =>
+    request<BarcodeResolution>(
+      `/products/resolve-barcode?code=${encodeURIComponent(code)}`,
     ).then((r) => {
       if (r.product.productType === "physical_product") add(r.product);
     }),
@@ -541,8 +563,8 @@ export function PurchaseForm({ user }: { user: SafeUser }) {
         <CameraScanner
           close={() => setCamera(false)}
           onScan={(code) =>
-            request<{ product: ProductListRow }>(
-              `/products/lookup?code=${encodeURIComponent(code)}`,
+            request<BarcodeResolution>(
+              `/products/resolve-barcode?code=${encodeURIComponent(code)}`,
             ).then((r) => {
               if (r.product.productType === "physical_product") add(r.product);
             })

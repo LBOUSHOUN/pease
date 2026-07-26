@@ -1,0 +1,9 @@
+ALTER TABLE "products" ADD COLUMN "author" text;
+ALTER TABLE "products" ADD COLUMN "isbn10" text;
+ALTER TABLE "products" ADD COLUMN "isbn13" text;
+ALTER TABLE "products" ADD COLUMN "publisher" text;
+ALTER TABLE "products" ADD COLUMN "publication_year" integer;
+ALTER TABLE "products" ADD COLUMN "book_language" text;
+CREATE UNIQUE INDEX "products_isbn10_uq" ON "products" (lower(trim("isbn10"))) WHERE "isbn10" IS NOT NULL;
+CREATE UNIQUE INDEX "products_isbn13_uq" ON "products" (lower(trim("isbn13"))) WHERE "isbn13" IS NOT NULL;
+ALTER TABLE "products" ADD CONSTRAINT "products_publication_year_ck" CHECK ("publication_year" IS NULL OR ("publication_year" >= 1000 AND "publication_year" <= 2200));

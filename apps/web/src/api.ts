@@ -4,8 +4,13 @@ import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { deleteDesktopSessionToken, desktopAuthorization, isNativeDesktop } from "./desktop-session";
 import { clearOfflineAuthSnapshot } from "./offline-auth";
 import { recordConnectionAttempt, type ConnectionErrorCategory } from "./connection-diagnostics";
+import { isAbortError } from "./request-error";
 
-export type ApiRequest = Omit<RequestInit, "body"> & { json?: unknown; skipDesktopAuth?: boolean };
+export type ApiRequest = Omit<RequestInit, "body"> & {
+  json?: unknown;
+  skipDesktopAuth?: boolean;
+  desktopTokenOverride?: string;
+};
 export class ApiFailure extends Error {
   constructor(
     public data: ApiError,
@@ -30,23 +35,37 @@ const messages: Record<number, string> = {
 
 type ApiBaseContext = {
   env?: Record<string, string | boolean | undefined>;
-  location?: { protocol?: string };
+  location?: { protocol?: string; origin?: string };
 };
 
 export function resolveApiBaseUrl(context: ApiBaseContext = {}): string {
   const env = context.env ?? import.meta.env;
-  const configured =
-    typeof env.VITE_API_URL === "string" ? env.VITE_API_URL.trim() : "";
-  if (configured) return configured.replace(/\/$/, "");
   const protocol = context.location?.protocol;
   const browserProtocol =
     typeof window !== "undefined" ? window.location.protocol : undefined;
   const activeProtocol = protocol ?? browserProtocol;
-  if (activeProtocol === "tauri:" || isTauri()) {
+  const native = activeProtocol === "tauri:" || isTauri();
+  if (native) {
+    const desktopConfigured =
+      typeof env.VITE_DESKTOP_API_URL === "string"
+        ? env.VITE_DESKTOP_API_URL.trim()
+        : "";
+    const legacyConfigured =
+      typeof env.VITE_API_URL === "string" &&
+      /^https?:\/\//u.test(env.VITE_API_URL.trim())
+        ? env.VITE_API_URL.trim()
+        : "";
+    const configured = desktopConfigured || legacyConfigured;
+    if (configured) return configured.replace(/\/$/, "");
     if (env.DEV === true) return "http://127.0.0.1:3000/api";
-    throw new Error("VITE_API_URL doit être configurée pour l’application de bureau.");
+    throw new Error(
+      "VITE_DESKTOP_API_URL doit être configurée pour l’application de bureau.",
+    );
   }
-  return "/api";
+  const configured =
+    typeof env.VITE_API_URL === "string" ? env.VITE_API_URL.trim() : "";
+  if (!configured || /^https?:\/\//u.test(configured)) return "/api";
+  return configured.replace(/\/$/, "");
 }
 
 export function buildApiUrl(path: string, context: ApiBaseContext = {}): string {
@@ -89,12 +108,20 @@ export async function request<T>(
   path: string,
   options: ApiRequest = {},
 ): Promise<T> {
-  const { json, headers: suppliedHeaders, skipDesktopAuth, ...init } = options;
+  const {
+    json,
+    headers: suppliedHeaders,
+    skipDesktopAuth,
+    desktopTokenOverride,
+    ...init
+  } = options;
   const headers = new Headers(suppliedHeaders);
   const native = isNativeDesktop();
   if (native) {
     headers.set("x-maktaba-client", "tauri-desktop");
-    const token = skipDesktopAuth ? null : await desktopAuthorization();
+    const token = skipDesktopAuth
+      ? null
+      : (desktopTokenOverride ?? (await desktopAuthorization()));
     if (token) headers.set("authorization", `Bearer ${token}`);
   }
   let body: string | undefined;
@@ -123,21 +150,28 @@ export async function request<T>(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error),
-      timeout = error instanceof DOMException && error.name === "AbortError",
+      timeout = error instanceof Error && error.name === "TimeoutError",
+      cancelled = isAbortError(error),
       category: ConnectionErrorCategory = timeout ? "timeout"
+        : cancelled ? "cancelled"
         : native && /scope|permission|not allowed|denied/i.test(message) ? "csp_webview"
           : native && /invoke|plugin|command/i.test(message) ? "tauri_command" : "network";
     recordConnectionAttempt({ category, errorName: error instanceof Error ? error.name : "Error", message, fetchAttempted: true });
     if (native) console.warn("[desktop-network] request failed", { path, category, errorName: error instanceof Error ? error.name : "Error" });
-    if (timeout) throw error;
+    if (cancelled) {
+      if (error instanceof Error) throw error;
+      throw new DOMException("La requête a été annulée.", "AbortError");
+    }
     throw new ApiFailure(
       {
         code: timeout ? "TIMEOUT" : "NETWORK_ERROR",
-        message: timeout ? "Le délai de connexion à l’API est dépassé." : "Impossible de joindre le serveur. Vérifiez votre connexion.",
+        message: timeout
+          ? "Le délai de connexion à l’API est dépassé."
+          : "Impossible de joindre le serveur. Vérifiez votre connexion.",
       },
       0,
       undefined,
-      category,
+      timeout ? "timeout" : category,
     );
   }
   recordConnectionAttempt({ category: response.ok ? "none" : "http", httpStatus: response.status, errorName: response.ok ? "—" : "HTTPError", message: response.ok ? "Requête réussie" : `Réponse HTTP ${response.status}` });
@@ -150,6 +184,17 @@ export async function request<T>(
     } catch {
       parsed = undefined;
     }
+  }
+  if (response.ok && text && parsed === undefined) {
+    throw new ApiFailure(
+      {
+        code: "INVALID_RESPONSE",
+        message: "Le serveur a renvoyé une réponse invalide.",
+      },
+      502,
+      undefined,
+      "http",
+    );
   }
   if (!response.ok) {
     const retry = response.headers.get("retry-after");

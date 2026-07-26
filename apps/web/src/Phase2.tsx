@@ -12,17 +12,19 @@ import type {
   ProductDetail,
   ProductListResponse,
   ProductListRow,
-  ProductLookup,
   StockListResponse,
   StockMovementListResponse,
   SafeUser,
   RegisterStatus,
+  BarcodeResolution,
 } from "@maktaba/shared-types";
-import { buildApiUrl, request } from "./api";
+import { ApiFailure, downloadFile, request } from "./api";
 import { centsToMad, madToCents } from "./money";
 import { calculateStockAfter } from "./stock-utils";
-import { useScanner } from "./use-scanner";
 import { enqueueGlobalScan } from "./global-scanner";
+import { useScannerContext } from "./scanner-context";
+import { BarcodeInput } from "./BarcodeInput";
+import { isAbortError } from "./request-error";
 import { applyBarcodePrefill, readBarcodePrefill } from "./product-create-flow";
 import { isTauriRuntime, markCachedProductArchived, readQueueAsync, refreshOfflineCache } from "./offline-pos";
 const has = (u: SafeUser, p: string) => u.permissions.includes(p);
@@ -164,15 +166,24 @@ export function CategoriesPage({ user }: { user: SafeUser }) {
     query = useDebounced(search);
   useEffect(() => {
     const c = new AbortController();
+    let active = true;
     request<CategoryListResponse>(
       `/categories?${new URLSearchParams({ search: query, status, page: String(page) })}`,
       { signal: c.signal },
     )
-      .then(setData)
-      .catch((e) => {
-        if (e.name !== "AbortError") setError(e.message);
+      .then((result) => {
+        if (!active) return;
+        setData(result);
+        setError("");
+      })
+      .catch((e: unknown) => {
+        if (active && !isAbortError(e))
+          setError(e instanceof Error ? e.message : "Erreur");
       });
-    return () => c.abort();
+    return () => {
+      active = false;
+      c.abort();
+    };
   }, [query, status, page, refresh]);
   const toggle = async (x: Category) => {
     if (!x.isActive && !confirm("Réactiver cette catégorie ?")) return;
@@ -343,7 +354,13 @@ export function CategoryForm({ edit = false }: { edit?: boolean }) {
     </main>
   );
 }
-export function ProductsPage({ user }: { user: SafeUser }) {
+export function ProductsPage({
+  user,
+  nativeBookAssistantAvailable = false,
+}: {
+  user: SafeUser;
+  nativeBookAssistantAvailable?: boolean;
+}) {
   const [search, setSearch] = useState(""),
     [type, setType] = useState(""),
     [categoryId, setCategoryId] = useState(""),
@@ -356,6 +373,7 @@ export function ProductsPage({ user }: { user: SafeUser }) {
     [data, setData] = useState<ProductListResponse>(),
     [found, setFound] = useState<ProductListRow>(),
     [error, setError] = useState(""),
+    [exporting, setExporting] = useState(false),
     query = useDebounced(search),
     load = () => {
       const c = new AbortController(),
@@ -364,19 +382,25 @@ export function ProductsPage({ user }: { user: SafeUser }) {
           status,
           page: String(page),
         });
+      let active = true;
       if (type) params.set("productType", type);
       if (categoryId) params.set("categoryId", categoryId);
       if (low) params.set("lowStockOnly", "true");
       if (out) params.set("outOfStockOnly", "true");
       request<ProductListResponse>(`/products?${params}`, { signal: c.signal })
         .then((result) => {
+          if (!active) return;
           setData(result);
           setError("");
         })
-        .catch((e) => {
-          if (e.name !== "AbortError") setError(e.message);
+        .catch((e: unknown) => {
+          if (active && !isAbortError(e))
+            setError(e instanceof Error ? e.message : "Erreur");
         });
-      return () => c.abort();
+      return () => {
+        active = false;
+        c.abort();
+      };
     };
   useEffect(load, [query, type, categoryId, status, low, out, page, refresh]);
   useEffect(() => {
@@ -388,8 +412,8 @@ export function ProductsPage({ user }: { user: SafeUser }) {
     try {
       setFound(
         (
-          await request<ProductLookup>(
-            `/products/lookup/${encodeURIComponent(code)}`,
+          await request<BarcodeResolution>(
+            `/products/resolve-barcode?code=${encodeURIComponent(code)}`,
           )
         ).product,
       );
@@ -399,7 +423,26 @@ export function ProductsPage({ user }: { user: SafeUser }) {
       setError(e instanceof Error ? e.message : "Produit introuvable.");
     }
   };
-  useScanner((code) => void lookup(code));
+  useScannerContext("products-page", "page", ({ code }) => lookup(code));
+  const exportSerializedUnits = async () => {
+    if (exporting) return;
+    setExporting(true);
+    setError("");
+    try {
+      await downloadFile(
+        "/serialized-units/export.csv",
+        "double-library-unites-serialisees.csv",
+      );
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Impossible d’exporter les unités.",
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
   return (
     <main className="page">
       <div className="title">
@@ -409,10 +452,22 @@ export function ProductsPage({ user }: { user: SafeUser }) {
             Nouveau produit
           </Link>
         )}
+        {nativeBookAssistantAvailable &&
+          has(user, "products.use_book_assistant") && (
+          <Link className="button secondary" to="/products/new/book-assistant">
+            Ajouter un livre
+          </Link>
+        )}
         {has(user, "serialized_units.export") && (
-          <a className="button secondary" href={buildApiUrl("/serialized-units/export.csv")} target="_blank" rel="noreferrer">
-            Exporter les unités CSV
-          </a>
+          <button
+            type="button"
+            className="secondary"
+            disabled={exporting}
+            aria-busy={exporting}
+            onClick={() => void exportSerializedUnits()}
+          >
+            {exporting ? "Export en cours…" : "Exporter les unités CSV"}
+          </button>
         )}
       </div>
       <ErrorBox value={error} />
@@ -651,6 +706,22 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
       setGenerating(false);
     }
   };
+  const validateScannedBarcode = async (code: string) => {
+    if (offline) return;
+    try {
+      const match = await request<BarcodeResolution>(
+        `/products/resolve-barcode?code=${encodeURIComponent(code)}`,
+      );
+      setError(
+        edit && match.product.id === Number(id)
+          ? ""
+          : "Ce code-barres est déjà utilisé par un autre produit.",
+      );
+    } catch (reason) {
+      if (reason instanceof ApiFailure && reason.status === 404) setError("");
+      else setError(reason instanceof Error ? reason.message : "Impossible de vérifier ce code-barres.");
+    }
+  };
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (busy) return;
@@ -787,24 +858,22 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
           />
         </label>
         <h2 className="form-section-title">Code-barres</h2>
-        <label className="barcode-field form-section-card">
-          Code-barres
-          <input
-            ref={barcodeInput}
-            data-scanner-input="true"
-            autoComplete="off"
+        <div className="barcode-field form-section-card">
+          <BarcodeInput
+            inputRef={barcodeInput}
+            mode="capture"
             value={form.manufacturerBarcode}
-            onChange={(e) => set("manufacturerBarcode", e.target.value)}
+            onChange={(value) => set("manufacturerBarcode", value)}
+            onScan={validateScannedBarcode}
           />
           <span className="inline-actions">
-            <button type="button" className="secondary" onClick={() => barcodeInput.current?.focus()}>Scanner</button>
             <button type="button" className="secondary barcode-generate-action" disabled={generating || busy || offline || form.productType === "service"} onClick={generateBarcode}>{generating ? "Génération…" : "Générer"}</button>
             {user.permissions.includes("labels.print") && <button type="button" className="secondary barcode-print-action" disabled={!edit || !id || !form.name.trim()} onClick={() => id && nav(`/products/${id}/label`)}>Imprimer l’étiquette</button>}
           </span>
           {!edit && user.permissions.includes("labels.print") && <small>Enregistrez d’abord le produit pour imprimer l’étiquette.</small>}
           {offline && <small className="field-error">La génération d’un code-barres nécessite une connexion au serveur.</small>}
           <small>Scannez le code existant ou générez un code-barres interne.</small>
-        </label>
+        </div>
         <h2 className="form-section-title">Tarification</h2>
         <label>
           Prix d'achat MAD
@@ -916,20 +985,18 @@ export function ProductDetails({ user, offline = false }: { user: SafeUser; offl
     [error, setError] = useState(""), [refresh, setRefresh] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
-    const isAbort = (reason: unknown) =>
-      reason instanceof Error &&
-      (reason.name === "AbortError" ||
-        reason.message.toLowerCase().includes("aborted"));
+    let active = true;
 
     request<ProductDetail>(`/products/${id}`, {
       signal: controller.signal,
     })
       .then((product) => {
+        if (!active) return;
         setX(product);
         setError("");
       })
       .catch((reason) => {
-        if (!isAbort(reason)) {
+        if (active && !isAbortError(reason)) {
           setError(
             reason instanceof Error ? reason.message : "Produit introuvable.",
           );
@@ -941,9 +1008,11 @@ export function ProductDetails({ user, offline = false }: { user: SafeUser; offl
         `/stock/movements?productId=${id}&pageSize=10`,
         { signal: controller.signal },
       )
-        .then(setMoves)
+        .then((result) => {
+          if (active) setMoves(result);
+        })
         .catch((reason) => {
-          if (!isAbort(reason)) {
+          if (active && !isAbortError(reason)) {
             setError(
               reason instanceof Error
                 ? reason.message
@@ -955,7 +1024,10 @@ export function ProductDetails({ user, offline = false }: { user: SafeUser; offl
       setMoves(undefined);
     }
 
-    return () => controller.abort();
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, [id, user, refresh]);
   if (error)
     return (
@@ -996,6 +1068,12 @@ export function ProductDetails({ user, offline = false }: { user: SafeUser; offl
         </div>
       </section>
       <dl className="details">
+        {x.author && <><dt>Auteur</dt><dd>{x.author}</dd></>}
+        {x.isbn10 && <><dt>ISBN-10</dt><dd>{x.isbn10}</dd></>}
+        {x.isbn13 && <><dt>ISBN-13</dt><dd>{x.isbn13}</dd></>}
+        {x.publisher && <><dt>Éditeur</dt><dd>{x.publisher}</dd></>}
+        {x.publicationYear && <><dt>Année de publication</dt><dd>{x.publicationYear}</dd></>}
+        {x.bookLanguage && <><dt>Langue</dt><dd>{x.bookLanguage}</dd></>}
         <dt>Catégorie</dt>
         <dd>{x.categoryName}</dd>
         <dt>Type</dt>
@@ -1056,18 +1134,44 @@ export function StockPage({ user }: { user: SafeUser }) {
     [out, setOut] = useState(false),
     [page, setPage] = useState(1),
     [data, setData] = useState<StockListResponse>(),
+    [scannedProduct, setScannedProduct] = useState<ProductListRow>(),
     [error, setError] = useState(""),
     query = useDebounced(search);
+  useScannerContext("stock-page", "page", async ({ code }) => {
+    try {
+      const result = await request<BarcodeResolution>(
+        `/products/resolve-barcode?code=${encodeURIComponent(code)}`,
+      );
+      setScannedProduct(result.product);
+      setSearch(result.product.name);
+      setPage(1);
+      setError("");
+    } catch (reason) {
+      setScannedProduct(undefined);
+      setError(
+        reason instanceof ApiFailure && reason.status === 404
+          ? "Aucun produit ne correspond au code-barres scanné."
+          : reason instanceof Error ? reason.message : "Code-barres inconnu.",
+      );
+    }
+  });
   useEffect(() => {
     const controller = new AbortController();
+    let active = true;
     request<CategoryListResponse>("/categories?pageSize=100&status=active", {
       signal: controller.signal,
     })
-      .then((value) => setCategoryOptions(value.rows))
-      .catch((reason) => {
-        if (reason.name !== "AbortError") setError(reason.message);
+      .then((value) => {
+        if (active) setCategoryOptions(value.rows);
+      })
+      .catch((reason: unknown) => {
+        if (active && !isAbortError(reason))
+          setError(reason instanceof Error ? reason.message : "Erreur");
       });
-    return () => controller.abort();
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, []);
   useEffect(() => {
     const c = new AbortController(),
@@ -1078,13 +1182,22 @@ export function StockPage({ user }: { user: SafeUser }) {
         lowStockOnly: String(low),
         outOfStockOnly: String(out),
       });
+    let active = true;
     if (categoryId) p.set("categoryId", categoryId);
     request<StockListResponse>(`/stock?${p}`, { signal: c.signal })
-      .then(setData)
-      .catch((reason) => {
-        if (reason.name !== "AbortError") setError(reason.message);
+      .then((result) => {
+        if (!active) return;
+        setData(result);
+        setError("");
+      })
+      .catch((reason: unknown) => {
+        if (active && !isAbortError(reason))
+          setError(reason instanceof Error ? reason.message : "Erreur");
       });
-    return () => c.abort();
+    return () => {
+      active = false;
+      c.abort();
+    };
   }, [query, categoryId, status, low, out, page]);
   return (
     <main className="page">
@@ -1100,6 +1213,11 @@ export function StockPage({ user }: { user: SafeUser }) {
         </div>
       </div>
       <ErrorBox value={error} />
+      {scannedProduct && <div className="notice" role="status" aria-live="polite">
+        Produit trouvé : <strong>{scannedProduct.name}</strong> · Stock {scannedProduct.currentStock}
+        {" "}· Seuil {scannedProduct.minimumStock}
+        {scannedProduct.inventoryMode === "serialized" && " · Suivi par unité"}
+      </div>}
       <div className="filters">
         <input
           value={search}
@@ -1193,7 +1311,7 @@ export function StockPage({ user }: { user: SafeUser }) {
             </thead>
             <tbody>
               {data.rows.map((x) => (
-                <tr key={x.id}>
+                <tr key={x.id} className={scannedProduct?.id === x.id ? "scanner-match" : undefined}>
                   <td>{x.name}</td>
                   <td>{x.categoryName}</td>
                   <td>{x.sku || "—"}</td>
@@ -1263,8 +1381,8 @@ export function StockAdjust() {
     try {
       setProduct(
         (
-          await request<ProductLookup>(
-            `/products/lookup/${encodeURIComponent(code)}`,
+          await request<BarcodeResolution>(
+            `/products/resolve-barcode?code=${encodeURIComponent(code)}`,
           )
         ).product,
       );
@@ -1273,7 +1391,23 @@ export function StockAdjust() {
       setError(e instanceof Error ? e.message : "Produit introuvable.");
     }
   };
-  useScanner((code) => void lookup(code));
+  useScannerContext("stock-adjust-page", "page", async ({ code }) => {
+    const resolved = await request<BarcodeResolution>(
+      `/products/resolve-barcode?code=${encodeURIComponent(code)}`,
+    );
+    if (
+      type === "inventory_adjustment" &&
+      product?.id === resolved.product.id &&
+      resolved.matchType !== "serialized_unit"
+    ) {
+      setQuantity((value) => value + 1);
+      setError("");
+      return;
+    }
+    setProduct(resolved.product);
+    setQuantity(1);
+    setError("");
+  });
   const increase =
       ["opening_stock", "stock_in"].includes(type) ||
       (["manual_adjustment", "inventory_adjustment"].includes(type) &&
@@ -1448,6 +1582,7 @@ export function StockMovements() {
   useEffect(() => {
     const c = new AbortController(),
       p = new URLSearchParams({ page: String(page) });
+    let active = true;
     if (type) p.set("movementType", type);
     if (productId) p.set("productId", productId);
     if (workerId) p.set("workerId", workerId);
@@ -1456,11 +1591,19 @@ export function StockMovements() {
     request<StockMovementListResponse>(`/stock/movements?${p}`, {
       signal: c.signal,
     })
-      .then(setData)
-      .catch((reason) => {
-        if (reason.name !== "AbortError") setError(reason.message);
+      .then((result) => {
+        if (!active) return;
+        setData(result);
+        setError("");
+      })
+      .catch((reason: unknown) => {
+        if (active && !isAbortError(reason))
+          setError(reason instanceof Error ? reason.message : "Erreur");
       });
-    return () => c.abort();
+    return () => {
+      active = false;
+      c.abort();
+    };
   }, [page, type, productId, workerId, startDate, endDate]);
   return (
     <main className="page">

@@ -203,6 +203,17 @@ function cookie(response: { headers: Record<string, unknown> }) {
 }
 
 describe("online authentication", () => {
+  it("uses a host-only secure SameSite=Lax browser cookie in production", async () => {
+    const { sessionCookieOptions } = await import("../src/auth.js");
+    expect(sessionCookieOptions(true)).toEqual({
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      path: "/",
+    });
+    expect(sessionCookieOptions(true)).not.toHaveProperty("domain");
+  });
+
   it("answers health and database readiness", async () => {
     expect((await app.inject("/health")).statusCode).toBe(200);
     expect((await app.inject("/ready")).statusCode).toBe(200);
@@ -288,7 +299,7 @@ describe("online authentication", () => {
     const changed = await app.inject({
       method: "POST", url: "/api/auth/change-password",
       headers: { origin: "http://tauri.localhost", "x-maktaba-client": "tauri-desktop", authorization: `Bearer ${oldToken}` },
-      payload: { currentPassword: "Secret123", newPassword: "NouveauSecret456" },
+      payload: { currentPassword: "Secret123", newPassword: "NouveauSecret456", confirmation: "NouveauSecret456" },
     });
     expect(changed.statusCode).toBe(200);
     const replacement = changed.json().desktopSession.token as string;
@@ -296,6 +307,87 @@ describe("online authentication", () => {
     expect((await app.inject({ url: "/api/auth/me", headers: { authorization: `Bearer ${oldToken}` } })).json().code).toBe("SESSION_REVOKED");
     expect((await app.inject({ url: "/api/auth/me", headers: { authorization: `Bearer ${replacement}` } })).statusCode).toBe(200);
   });
+  it("lets an authenticated user manage only their own profile", async () => {
+    const session = await phase2Owner();
+    const read = await app.inject({
+      url: "/api/account/profile",
+      headers: { cookie: session },
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.json().profile.username).toBe("owner");
+    expect(read.json().profile).not.toHaveProperty("passwordHash");
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: "/api/account/profile",
+      headers: { cookie: session },
+      payload: {
+        fullName: "Propriétaire Modifié",
+        phone: "+212 600-000000",
+        email: "owner@example.com",
+        currentPassword: "Secret123",
+      },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().profile.fullName).toBe("Propriétaire Modifié");
+    expect(updated.json().profile.phone).toBe("+212 600-000000");
+
+    const roleAttempt = await app.inject({
+      method: "PATCH",
+      url: "/api/account/profile",
+      headers: { cookie: session },
+      payload: {
+        fullName: "Propriétaire Modifié",
+        phone: null,
+        email: "owner@example.com",
+        role: "cashier",
+      },
+    });
+    expect(roleAttempt.statusCode).toBe(400);
+    await database.sql`insert into users(full_name,username,email,password_hash,role,must_change_password) values('Autre','autre','other@example.com','unused','cashier',false)`;
+    const duplicateEmail = await app.inject({
+      method: "PATCH",
+      url: "/api/account/profile",
+      headers: { cookie: session },
+      payload: {
+        fullName: "Propriétaire Modifié",
+        phone: null,
+        email: "other@example.com",
+        currentPassword: "Secret123",
+      },
+    });
+    expect(duplicateEmail.statusCode).toBe(409);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/account/change-password",
+          headers: { cookie: session },
+          payload: {
+            currentPassword: "incorrect",
+            newPassword: "NouveauSecret456",
+            confirmation: "NouveauSecret456",
+          },
+        })
+      ).statusCode,
+    ).toBe(400);
+    const mismatch = await app.inject({
+      method: "POST",
+      url: "/api/account/change-password",
+      headers: { cookie: session },
+      payload: {
+        currentPassword: "Secret123",
+        newPassword: "NouveauSecret456",
+        confirmation: "Différent789",
+      },
+    });
+    expect(mismatch.statusCode).toBe(400);
+    expect(mismatch.json().fieldErrors.confirmation).toBeTruthy();
+    const [audit] =
+      await database.sql`select count(*)::int count from audit_logs where action='account.profile_updated' and user_id=1`;
+    expect(audit!.count).toBe(1);
+  });
+
   it("returns 401 for wrong and unknown credentials", async () => {
     await owner();
     for (const body of [
@@ -710,6 +802,30 @@ describe("online catalog and stock", () => {
           })
         ).statusCode,
       ).toBe(200);
+    for (const [code, matchType] of [
+      [created.manufacturerBarcode, "original_barcode"],
+      [created.internalBarcode, "generated_barcode"],
+    ]) {
+      const resolved = await app.inject({
+        url: `/api/products/resolve-barcode?code=${encodeURIComponent(code)}`,
+        headers: { cookie: session },
+      });
+      expect(resolved.statusCode).toBe(200);
+      expect(resolved.json()).toMatchObject({
+        matchType,
+        normalizedCode: code,
+        product: { id: created.id },
+        unit: null,
+      });
+    }
+    expect(
+      (
+        await app.inject({
+          url: `/api/products/resolve-barcode?code=${encodeURIComponent(`${created.manufacturerBarcode}9`)}`,
+          headers: { cookie: session },
+        })
+      ).statusCode,
+    ).toBe(404);
     const list = await app.inject({
       url: "/api/products?search=CAH-1&productType=physical_product&pageSize=1",
       headers: { cookie: session },
@@ -1069,6 +1185,42 @@ describe("online catalog and stock", () => {
     ).toBe(200);
     void session;
   });
+  it("creates book metadata and detects ISBN and title-author duplicates", async () => {
+    const admin = await phase2Owner();
+    const cat = (await category(admin, "Livres")).json();
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/products",
+      headers: { cookie: admin },
+      payload: productBody(cat.id, {
+        name: "Physique moderne",
+        manufacturerBarcode: "9780306406157",
+        author: "Auteur Exemple",
+        isbn10: "0306406152",
+        isbn13: "9780306406157",
+        publisher: "Éditions Exemple",
+        publicationYear: 2025,
+        bookLanguage: "fr",
+      }),
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().isbn13).toBe("9780306406157");
+    const byIsbn = await app.inject({
+      url: "/api/products/book-duplicates?isbn13=9780306406157",
+      headers: { cookie: admin },
+    });
+    expect(byIsbn.statusCode).toBe(200);
+    expect(byIsbn.json().rows).toHaveLength(1);
+    const byIdentity = await app.inject({
+      url: `/api/products/book-duplicates?${new URLSearchParams({
+        title: "Physique moderne",
+        author: "Auteur Exemple",
+      })}`,
+      headers: { cookie: admin },
+    });
+    expect(byIdentity.json().rows[0].id).toBe(created.json().id);
+  });
+
   it("keeps paginated Phase 2 reads responsive", async () => {
     const session = await phase2Owner(),
       cat = (await category(session)).json();
@@ -1871,6 +2023,14 @@ describe("online administration, reports, exports and settings", () => {
       });
       expect(response.statusCode, `${kind}: ${response.body}`).toBe(200);
       expect(response.json().pageSize).toBe(10);
+      if (kind === "registers") {
+        const [register] = response.json().rows;
+        expect(register.cash_sales_cents).toBe(500);
+        expect(register.debt_payments_cents).toBe(0);
+        expect(register.expected_closing_cents).toBe(20500);
+        expect(register.actual_closing_cents).toBeNull();
+        expect(register.difference_cents).toBeNull();
+      }
     }
     const argon2 = (await import("argon2")).default;
     await database.sql`insert into users(full_name,username,password_hash,role,must_change_password) values('Caissier','reportcash',${await argon2.hash("Secret123")},'cashier',false)`;

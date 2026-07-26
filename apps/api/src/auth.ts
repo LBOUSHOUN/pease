@@ -23,6 +23,14 @@ export function safeUser(u: typeof users.$inferSelect): SafeUser {
   };
 }
 export type CreatedSession = { token: string; expiresAt: string };
+export function sessionCookieOptions(production = config.NODE_ENV === "production") {
+  return {
+    httpOnly: true,
+    secure: production,
+    sameSite: "lax" as const,
+    path: "/",
+  };
+}
 export function isDesktopRequest(req: FastifyRequest) {
   const origin = req.headers.origin;
   return req.headers["x-maktaba-client"] === "tauri-desktop" &&
@@ -36,10 +44,7 @@ export async function createSession(userId: number, reply: FastifyReply, desktop
     .values({ userId, tokenHash: hash(token), expiresAt: expires, sessionType: desktop ? "desktop" : "browser", deviceLabel: desktop ? "Double Library POS Desktop" : null });
   if (desktop) return { token, expiresAt: expires.toISOString() };
   reply.setCookie(cookie, token, {
-    httpOnly: true,
-    secure: config.NODE_ENV === "production",
-    sameSite: config.NODE_ENV === "production" ? "none" : "lax",
-    path: "/",
+    ...sessionCookieOptions(),
     expires,
   });
 }
@@ -50,12 +55,7 @@ export async function revoke(req: FastifyRequest, reply: FastifyReply) {
       .update(sessions)
       .set({ revokedAt: new Date() })
       .where(eq(sessions.tokenHash, hash(token)));
-  reply.clearCookie(cookie, {
-    httpOnly: true,
-    secure: config.NODE_ENV === "production",
-    sameSite: config.NODE_ENV === "production" ? "none" : "lax",
-    path: "/",
-  });
+  reply.clearCookie(cookie, sessionCookieOptions());
 }
 export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
   const token = bearer(req) ?? req.cookies[cookie];
@@ -89,7 +89,15 @@ function bearer(req: FastifyRequest) {
   const header = req.headers.authorization;
   if (!header?.startsWith("Bearer ")) return undefined;
   const token = header.slice(7).trim();
-  return /^[A-Za-z0-9_-]{43}$/.test(token) ? token : undefined;
+  const containsForbiddenCharacter = [...token].some((character) => {
+    const code = character.charCodeAt(0);
+    return /\s/u.test(character) || code <= 31 || code === 127;
+  });
+  return token.length >= 32 &&
+    token.length <= 512 &&
+    !containsForbiddenCharacter
+    ? token
+    : undefined;
 }
 export function requirePermission(permission: string) {
   return async (req: FastifyRequest, reply: FastifyReply) => {

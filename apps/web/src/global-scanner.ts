@@ -47,5 +47,15 @@ export class OrderedScanQueue {
 export const globalScanQueue = new OrderedScanQueue();
 export const enqueueGlobalScan = (barcode: string, source: ScanSource = "usb") =>
   globalScanQueue.enqueue(barcode, source);
+export function queueScanForPos(
+  barcode: string,
+  pathname: string,
+  navigate: (path: string) => void,
+  enqueue: (value: string) => boolean = enqueueGlobalScan,
+) {
+  const queued = enqueue(barcode);
+  if (queued && pathname !== "/pos") navigate("/pos");
+  return queued;
+}
 export const hasBlockingScannerContext = (root: Document = document) =>
   Boolean(root.querySelector('dialog[open],[role="dialog"],main form,form[data-unsaved="true"],[data-scanner-blocking="true"]'));

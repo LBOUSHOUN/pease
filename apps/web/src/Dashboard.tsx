@@ -7,6 +7,7 @@ import type {
 } from "@maktaba/shared-types";
 import { request } from "./api";
 import { centsToMad } from "./money";
+import { isAbortError } from "./request-error";
 
 type TopPeriod = TopProductsResponse["period"];
 
@@ -21,15 +22,23 @@ export default function Dashboard({ user }: { user: SafeUser }) {
 
   useEffect(() => {
     const controller = new AbortController();
+    let active = true;
     request<DashboardReport>("/reports/dashboard", {
       signal: controller.signal,
     })
-      .then(setData)
+      .then((result) => {
+        if (!active) return;
+        setData(result);
+        setError("");
+      })
       .catch((reason: unknown) => {
-        if (reason instanceof Error && reason.name === "AbortError") return;
+        if (!active || isAbortError(reason)) return;
         setError(reason instanceof Error ? reason.message : "Erreur");
       });
-    return () => controller.abort();
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, []);
 
   useEffect(() => {
@@ -37,8 +46,8 @@ export default function Dashboard({ user }: { user: SafeUser }) {
       setTopProducts(undefined);
       return;
     }
-    setTopProducts(undefined);
     const controller = new AbortController();
+    let active = true;
     const params = new URLSearchParams({ period, limit: "10" });
     if (period === "custom") {
       params.set("startDate", startDate);
@@ -48,12 +57,19 @@ export default function Dashboard({ user }: { user: SafeUser }) {
     request<TopProductsResponse>(`/reports/top-products?${params}`, {
       signal: controller.signal,
     })
-      .then(setTopProducts)
+      .then((result) => {
+        if (!active) return;
+        setTopProducts(result);
+        setTopError("");
+      })
       .catch((reason: unknown) => {
-        if (reason instanceof Error && reason.name === "AbortError") return;
+        if (!active || isAbortError(reason)) return;
         setTopError(reason instanceof Error ? reason.message : "Erreur");
       });
-    return () => controller.abort();
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, [period, startDate, endDate]);
 
   if (error)

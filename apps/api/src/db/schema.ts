@@ -130,6 +130,12 @@ export const products = pgTable(
     categoryId: integer("category_id").references(() => categories.id),
     name: text().notNull(),
     description: text(),
+    author: text(),
+    isbn10: text(),
+    isbn13: text(),
+    publisher: text(),
+    publicationYear: integer("publication_year"),
+    bookLanguage: text("book_language"),
     productType: text("product_type").notNull(),
     inventoryMode: text("inventory_mode").notNull().default("quantity"),
     sku: text().unique(),
@@ -170,6 +176,16 @@ export const products = pgTable(
     index("products_manufacturer_barcode_idx").on(t.manufacturerBarcode),
     index("products_internal_barcode_idx").on(t.internalBarcode),
     index("products_qr_identifier_idx").on(t.qrIdentifier),
+    uniqueIndex("products_isbn10_uq")
+      .on(sql`lower(trim(${t.isbn10}))`)
+      .where(sql`${t.isbn10} is not null`),
+    uniqueIndex("products_isbn13_uq")
+      .on(sql`lower(trim(${t.isbn13}))`)
+      .where(sql`${t.isbn13} is not null`),
+    check(
+      "products_publication_year_ck",
+      sql`${t.publicationYear} is null or (${t.publicationYear}>=1000 and ${t.publicationYear}<=2200)`,
+    ),
     check("product_stock_ck", sql`${t.currentStock}>=0`),
     check(
       "product_prices_ck",

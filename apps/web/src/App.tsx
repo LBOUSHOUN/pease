@@ -22,11 +22,15 @@ import { initializeAuth, OfflineColdStartError, resetAuthInitialization } from "
 import { singleFlight } from "./single-flight";
 import { checkConnection, getOfflineCacheStatus, getOfflineQueueSummary, isTauriRuntime, refreshOfflineCache, syncPendingOfflineSales } from "./offline-pos";
 import { useScanner } from "./use-scanner";
-import { enqueueGlobalScan, hasBlockingScannerContext } from "./global-scanner";
-import { deleteDesktopSessionToken, DesktopTokenStorageError, isNativeDesktop, saveDesktopSessionToken } from "./desktop-session";
+import { hasBlockingScannerContext, queueScanForPos } from "./global-scanner";
+import { scannerContexts, useScannerContext } from "./scanner-context";
+import { clearInMemoryDesktopSessionToken, deleteDesktopSessionToken, DesktopTokenStorageError, isNativeDesktop, saveDesktopSessionToken } from "./desktop-session";
 import { connectionDiagnostics, recordConnectionAttempt, resetConnectionDiagnostics, type ConnectionDiagnostics } from "./connection-diagnostics";
 import { clearOfflineAuthSnapshot, saveOfflineAuthSnapshot } from "./offline-auth";
+import { detectNativeBookAssistantAvailability } from "./app-runtime";
 const Dashboard = lazy(() => import("./Dashboard"));
+const AccountPage = lazy(() => import("./Account"));
+const BookAssistant = lazy(() => import("./BookAssistant"));
 const phase2 = () => import("./Phase2");
 const CategoriesPage = lazy(() =>
   phase2().then((m) => ({ default: m.CategoriesPage })),
@@ -154,6 +158,17 @@ const phase5 = () => import("./Phase5"),
 function field(f: FormData, n: string) {
   return String(f.get(n) ?? "");
 }
+export function NativeBookAssistantGate({
+  available,
+  allowed,
+  children,
+}: {
+  available: boolean;
+  allowed: boolean;
+  children: React.ReactNode;
+}) {
+  return available && allowed ? children : <Navigate to="/products/new" replace />;
+}
 export default function App() {
   const [user, setUser] = useState<SafeUser | null | undefined>(),
     [needsOwner, setNeedsOwner] = useState(false),
@@ -161,8 +176,20 @@ export default function App() {
     [authNotice, setAuthNotice] = useState(""),
     [diagnostics, setDiagnostics] = useState<ConnectionDiagnostics>(() => connectionDiagnostics()),
     [loggingOut, setLoggingOut] = useState(false),
-    [logoutError, setLogoutError] = useState("");
+    [logoutError, setLogoutError] = useState(""),
+    [nativeBookAssistantAvailable, setNativeBookAssistantAvailable] =
+      useState(false);
   const logoutAction = useRef<() => Promise<void>>(undefined);
+  useEffect(() => {
+    if (!isNativeDesktop()) return;
+    let active = true;
+    void detectNativeBookAssistantAvailability().then((available) => {
+      if (active) setNativeBookAssistantAvailable(available);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
   const refresh = useCallback(async () => {
     try {
       const result = await initializeAuth();
@@ -295,6 +322,7 @@ export default function App() {
         logoutError={logoutError}
         offline={offline}
         retry={retry}
+        nativeBookAssistantAvailable={nativeBookAssistantAvailable}
       />
     </BrowserRouter>
   );
@@ -320,6 +348,21 @@ function FormShell({
     </main>
   );
 }
+export async function persistDesktopSession(response: AuthResponse) {
+  if (!isNativeDesktop()) return;
+  if (!response.desktopSession) throw new DesktopTokenStorageError();
+  const token = response.desktopSession.token;
+  try {
+    await saveDesktopSessionToken(token);
+  } catch (reason) {
+    await clearInMemoryDesktopSessionToken();
+    await request("/auth/logout", {
+      method: "POST",
+      desktopTokenOverride: token,
+    }).catch(() => undefined);
+    throw reason;
+  }
+}
 function Onboarding({ done }: { done: (u: SafeUser) => void }) {
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
@@ -343,8 +386,7 @@ function Onboarding({ done }: { done: (u: SafeUser) => void }) {
         },
       });
       if (isNativeDesktop()) {
-        if (!x.desktopSession) throw new DesktopTokenStorageError();
-        await saveDesktopSessionToken(x.desktopSession.token);
+        await persistDesktopSession(x);
         await saveOfflineAuthSnapshot(x.user);
       }
       done(x.user);
@@ -380,7 +422,8 @@ function Onboarding({ done }: { done: (u: SafeUser) => void }) {
     </FormShell>
   );
 }
-function Login({ done, notice }: { done: (u: SafeUser) => void; notice: string }) {
+export function Login({ done, notice }: { done: (u: SafeUser) => void; notice: string }) {
+  const submitting = useRef(false);
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [showPassword, setShowPassword] = useState(false),
@@ -397,10 +440,13 @@ function Login({ done, notice }: { done: (u: SafeUser) => void; notice: string }
   }, [blockedUntil]);
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (busy || Date.now() < blockedUntil) return;
-    const f = new FormData(e.currentTarget);
+    if (submitting.current || busy || Date.now() < blockedUntil) return;
+    submitting.current = true;
+    const form = e.currentTarget;
+    const f = new FormData(form);
     setBusy(true);
     setError("");
+    let loginAccepted = false;
     try {
       const response = await request<AuthResponse>("/auth/login", {
             method: "POST",
@@ -409,19 +455,21 @@ function Login({ done, notice }: { done: (u: SafeUser) => void; notice: string }
               password: field(f, "password"),
             },
           });
+      loginAccepted = true;
       if (isNativeDesktop()) {
-        if (!response.desktopSession) throw new DesktopTokenStorageError();
-        await saveDesktopSessionToken(response.desktopSession.token);
+        await persistDesktopSession(response);
         await saveOfflineAuthSnapshot(response.user);
       }
-      done(response.user);
+      const verified = await request<AuthResponse>("/auth/me");
+      done(verified.user);
     } catch (x) {
-      setError(x instanceof Error ? x.message : "Connexion impossible");
-      const password = e.currentTarget.elements.namedItem("password");
+      setError(loginErrorMessage(x, loginAccepted));
+      const password = form.elements.namedItem("password");
       if (password instanceof HTMLInputElement) password.value = "";
       if (x instanceof ApiFailure && x.status === 429)
         setBlockedUntil(Date.now() + (x.retryAfterSeconds ?? 60) * 1000);
     } finally {
+      submitting.current = false;
       setBusy(false);
     }
   };
@@ -453,6 +501,20 @@ function Login({ done, notice }: { done: (u: SafeUser) => void; notice: string }
     </FormShell>
   );
 }
+
+export function loginErrorMessage(error: unknown, loginAccepted: boolean) {
+  if (loginAccepted && error instanceof ApiFailure && error.status === 401) {
+    return ["SESSION_EXPIRED", "SESSION_REVOKED"].includes(error.data.code)
+      ? "Connexion expirée. Reconnectez-vous."
+      : "Session refusée par le navigateur. Autorisez les cookies puis réessayez.";
+  }
+  if (error instanceof ApiFailure && error.status === 0)
+    return "Serveur indisponible. Vérifiez votre connexion.";
+  if (error instanceof ApiFailure && error.status >= 500)
+    return "Erreur interne. Réessayez plus tard.";
+  return error instanceof Error ? error.message : "Connexion impossible.";
+}
+
 function Password({
   user,
   done,
@@ -478,11 +540,11 @@ function Password({
             json: {
               currentPassword: field(f, "current"),
               newPassword: field(f, "new"),
+              confirmation: field(f, "confirm"),
             },
           });
       if (isNativeDesktop()) {
-        if (!response.desktopSession) throw new DesktopTokenStorageError();
-        await saveDesktopSessionToken(response.desktopSession.token);
+        await persistDesktopSession(response);
         await saveOfflineAuthSnapshot(response.user);
       }
       done(response.user);
@@ -568,6 +630,7 @@ function Layout({
   logoutError,
   offline,
   retry,
+  nativeBookAssistantAvailable,
 }: {
   user: SafeUser;
   logout: () => void;
@@ -575,6 +638,7 @@ function Layout({
   logoutError: string;
   offline: boolean;
   retry: () => Promise<void>;
+  nativeBookAssistantAvailable: boolean;
 }) {
   const [menu, setMenu] = useState(false),
     [scannerEnabled, setScannerEnabled] = useState(true),
@@ -586,20 +650,25 @@ function Layout({
   useScanner(
     async (barcode) => {
       if (!scannerAvailable || !scannerEnabled) return;
-      const active = document.activeElement;
-      if (loc.pathname === "/stock/receive" || active instanceof HTMLElement && active.closest("[data-scanner-input]")) return;
+      await scannerContexts.dispatch({ code: barcode, source: "usb" });
+    },
+    { maxIntervalMs: 80, minLength: 3, duplicateWindowMs: 40 },
+  );
+  useScannerContext(
+    "global-pos-fallback",
+    "fallback",
+    ({ code }) => {
       if (hasBlockingScannerContext()) {
         setScannerWarning("Fermez le formulaire ou la boîte de dialogue avant de scanner.");
         return;
       }
       setScannerWarning("");
       setUnknownBarcode("");
-      setScannerWarning("");
-      navigate("/pos");
-      enqueueGlobalScan(barcode);
+      queueScanForPos(code, loc.pathname, navigate);
     },
-    { maxIntervalMs: 80, minLength: 3, duplicateWindowMs: 0 },
+    scannerAvailable && scannerEnabled,
   );
+
   useEffect(() => {
     setMenu(false);
     setUnknownBarcode("");
@@ -631,7 +700,8 @@ function Layout({
           Double Library POS <small>Version en ligne</small>
         </div>
         <nav aria-label="Modules">
-          <NavLink to="/">Tableau de bord</NavLink>
+          <NavLink to="/" end>Tableau de bord</NavLink>
+          {!offline && <NavLink to="/account">Mon compte</NavLink>}
           {!offline && user.permissions.includes("products.view") && (
             <NavLink to="/products">Produits</NavLink>
           )}
@@ -691,12 +761,12 @@ function Layout({
           {logoutError && <small role="alert">{logoutError}</small>}
           <b>{user.fullName}</b>
           <small>{user.role}</small>
-          <button onClick={logout} disabled={loggingOut} aria-busy={loggingOut}>
+          <button type="button" onClick={logout} disabled={loggingOut} aria-busy={loggingOut}>
             {loggingOut ? "Déconnexion…" : "Déconnexion"}
           </button>
         </footer>
       </aside>
-      {menu && <button className="sidebar-overlay" aria-label="Fermer la navigation" onClick={() => setMenu(false)} />}
+      {menu && <button type="button" className="sidebar-overlay" aria-label="Fermer la navigation" onClick={() => setMenu(false)} />}
       <div className="main">
         {offline && (
           <div className="offline-banner" role="status">
@@ -705,7 +775,7 @@ function Layout({
           </div>
         )}
         <header>
-          <button className="menu-toggle" aria-label="Ouvrir la navigation" aria-controls="app-sidebar" aria-expanded={menu} onClick={() => setMenu(!menu)}>☰</button>
+          <button type="button" className="menu-toggle" aria-label={menu ? "Fermer la navigation" : "Ouvrir la navigation"} aria-controls="app-sidebar" aria-expanded={menu} onClick={() => setMenu(!menu)}>☰</button>
           <span className="topbar-title">Double Library POS</span>
           {scannerAvailable && (
             <button type="button" className="scanner-toggle secondary" aria-pressed={scannerEnabled} onClick={() => setScannerEnabled((value) => !value)}>
@@ -745,6 +815,9 @@ function Layout({
               </Suspense>
             }
           />
+          <Route path="/account" element={<Lazy><AccountPage user={user} /></Lazy>} />
+          <Route path="/account/profile" element={<Navigate to="/account" replace />} />
+          <Route path="/account/security" element={<Navigate to="/account" replace />} />
           <Route
             path="/categories"
             element={
@@ -773,7 +846,10 @@ function Layout({
             path="/products"
             element={
               <Lazy>
-                <ProductsPage user={user} />
+                <ProductsPage
+                  user={user}
+                  nativeBookAssistantAvailable={nativeBookAssistantAvailable}
+                />
               </Lazy>
             }
           />
@@ -783,6 +859,17 @@ function Layout({
               user.permissions.includes("products.create") ? (
                 <Lazy><ProductForm user={user} offline={offline} /></Lazy>
               ) : <Navigate to="/forbidden" replace />
+            }
+          />
+          <Route
+            path="/products/new/book-assistant"
+            element={
+              <NativeBookAssistantGate
+                available={nativeBookAssistantAvailable}
+                allowed={user.permissions.includes("products.use_book_assistant")}
+              >
+                <Lazy><BookAssistant user={user} /></Lazy>
+              </NativeBookAssistantGate>
             }
           />
           <Route

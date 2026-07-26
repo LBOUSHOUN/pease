@@ -27,8 +27,34 @@ export const loginSchema = z.object({
 });
 export const changePasswordSchema = z.object({
   currentPassword: z.string().min(1),
-  newPassword: requiredPassword,
+  newPassword: z
+    .string()
+    .min(8, "Le nouveau mot de passe doit contenir au moins 8 caractères.")
+    .max(200)
+    .regex(/[A-Za-zÀ-ÿ]/, "Le mot de passe doit contenir une lettre.")
+    .regex(/[0-9]/, "Le mot de passe doit contenir un chiffre."),
+  confirmation: z.string().min(1),
+}).superRefine((value, ctx) => {
+  if (value.newPassword !== value.confirmation)
+    ctx.addIssue({
+      code: "custom",
+      path: ["confirmation"],
+      message: "La confirmation ne correspond pas au nouveau mot de passe.",
+    });
 });
+export const accountProfileUpdateSchema = z
+  .object({
+    fullName: z.string().trim().min(2).max(100),
+    phone: z
+      .string()
+      .trim()
+      .max(40)
+      .regex(/^[+0-9 ().-]*$/, "Numéro de téléphone invalide.")
+      .nullable(),
+    email: z.string().trim().toLowerCase().email().max(200).nullable(),
+    currentPassword: z.string().max(200).optional(),
+  })
+  .strict();
 export const paginationSchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
@@ -74,10 +100,45 @@ export const categoryFiltersSchema = paginationSchema.extend({
   sort: z.enum(["name", "createdAt", "updatedAt"]).default("name"),
   direction: z.enum(["asc", "desc"]).default("asc"),
 });
+const isbn10Schema = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .regex(/^[0-9]{9}[0-9X]$/)
+  .refine(
+    (value) =>
+      [...value].reduce(
+        (sum, character, index) =>
+          sum +
+          (character === "X" ? 10 : Number(character)) * (10 - index),
+        0,
+      ) %
+        11 ===
+      0,
+    "ISBN-10 invalide.",
+  );
+const isbn13Schema = z
+  .string()
+  .trim()
+  .regex(/^97[89][0-9]{10}$/)
+  .refine((value) => {
+    const sum = [...value.slice(0, 12)].reduce(
+      (total, character, index) =>
+        total + Number(character) * (index % 2 === 0 ? 1 : 3),
+      0,
+    );
+    return (10 - (sum % 10)) % 10 === Number(value[12]);
+  }, "ISBN-13 invalide.");
 const productBase = z.object({
   categoryId: z.number().int().positive(),
   name: z.string().trim().min(1).max(200),
   description: optionalText,
+  author: z.string().trim().max(300).optional().nullable(),
+  isbn10: isbn10Schema.optional().nullable(),
+  isbn13: isbn13Schema.optional().nullable(),
+  publisher: z.string().trim().max(200).optional().nullable(),
+  publicationYear: z.number().int().min(1000).max(2200).optional().nullable(),
+  bookLanguage: z.string().trim().max(40).optional().nullable(),
   productType: z.enum(["physical_product", "service"]),
   inventoryMode: z.enum(["quantity", "serialized"]).default("quantity"),
   sku: optionalCode,
@@ -90,7 +151,7 @@ const productBase = z.object({
   unit: z.string().trim().min(1).max(40).default("unité"),
   shelfLocation: optionalCode,
   trackStock: z.boolean().default(true),
-});
+}).strict();
 export const productCreateSchema = productBase
   .extend({ initialQuantity: z.number().int().min(0).max(100000).default(0) })
   .superRefine((value, ctx) => {
@@ -105,6 +166,14 @@ export const productCreateSchema = productBase
 export const productUpdateSchema = productBase
   .partial()
   .refine((v) => Object.keys(v).length > 0);
+export const bookDuplicateQuerySchema = z.object({
+  isbn10: isbn10Schema.optional(),
+  isbn13: isbn13Schema.optional(),
+  title: z.string().trim().max(200).default(""),
+  author: z.string().trim().max(300).default(""),
+}).strict().refine((value) => value.isbn10 || value.isbn13 || value.title, {
+  message: "Un ISBN ou un titre est requis.",
+});
 
 export const serializedReceivingCreateSchema = z.object({
   productId: z.number().int().positive(),
@@ -136,6 +205,11 @@ export const identifierLookupSchema = z.object({
   code: z.string().trim().min(2).max(200),
   saleReady: queryBoolean.default(false),
 });
+export const barcodeResolveQuerySchema = z
+  .object({
+    code: barcodeValueSchema,
+  })
+  .strict();
 export const stockAdjustmentSchema = z
   .object({
     productId: z.number().int().positive(),

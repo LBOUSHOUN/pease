@@ -6,7 +6,7 @@
     "build":  {
                   "beforeDevCommand":  "node -e \"process.exit(0)\"",
                   "devUrl":  "http://127.0.0.1:5173",
-                  "beforeBuildCommand":  "npm --prefix ../../ run build --workspace=@maktaba/web",
+                  "beforeBuildCommand":  "node ../../scripts/verify-ocr-resources.mjs && npm --prefix ../../ run build --workspace=@maktaba/web",
                   "frontendDist":  "../../web/dist"
               },
     "app":  {
@@ -25,6 +25,9 @@
             },
     "bundle":  {
                    "active":  true,
+                   "resources": [
+                       "resources/ocr/**/*"
+                   ],
                    "targets":  [
                                    "nsis"
                                ],

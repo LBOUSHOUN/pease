@@ -9,6 +9,7 @@ import {
   ownerSchema,
   loginSchema,
   changePasswordSchema,
+  accountProfileUpdateSchema,
 } from "@maktaba/validation";
 import { config } from "./config.js";
 import { db, sql } from "./db/index.js";
@@ -25,11 +26,18 @@ import { registerPhase2 } from "./phase2.js";
 import { registerPhase3 } from "./phase3.js";
 import { registerPhase4 } from "./phase4.js";
 import { registerPhase5 } from "./phase5.js";
+
+function hasPostgresCode(error: unknown, code: string): boolean {
+  if (!error || typeof error !== "object") return false;
+  if ("code" in error && error.code === code) return true;
+  return "cause" in error && hasPostgresCode(error.cause, code);
+}
 import { registerPhase6 } from "./phase6.js";
 export async function buildApp() {
   const app = Fastify({
     logger: { level: config.LOG_LEVEL },
-    trustProxy: config.TRUST_PROXY === "true",
+    trustProxy:
+      config.NODE_ENV === "production" || config.TRUST_PROXY === "true",
     logController: new LogController({
       disableRequestLogging: config.NODE_ENV === "test",
     }),
@@ -251,15 +259,126 @@ export async function buildApp() {
   app.get("/api/auth/me", { preHandler: authenticate }, async (req) => ({
     user: req.user,
   }));
-  app.post(
-    "/api/auth/change-password",
+  const accountProfile = (u: typeof users.$inferSelect) => ({
+    id: u.id,
+    fullName: u.fullName,
+    username: u.username,
+    email: u.email,
+    phone: u.phone,
+    role: u.role,
+    permissions: safeUser(u).permissions,
+    isActive: u.isActive,
+    createdAt: u.createdAt.toISOString(),
+    lastLoginAt: u.lastLoginAt?.toISOString() ?? null,
+  });
+  app.get(
+    "/api/account/profile",
     { preHandler: authenticate },
+    async (req, reply) => {
+      const [user] = await db
+        .select()
+        .from(users)
+        .where(eq(users.id, req.user!.id))
+        .limit(1);
+      if (!user)
+        return reply.code(404).send({
+          code: "NOT_FOUND",
+          message: "Compte introuvable.",
+        });
+      return { profile: accountProfile(user) };
+    },
+  );
+  app.patch(
+    "/api/account/profile",
+    {
+      preHandler: authenticate,
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+    },
+    async (req, reply) => {
+      const parsed = accountProfileUpdateSchema.safeParse(req.body);
+      if (!parsed.success)
+        return reply.code(400).send({
+          code: "VALIDATION_ERROR",
+          message: "Vérifiez les informations saisies.",
+          fieldErrors: parsed.error.flatten().fieldErrors,
+        });
+      const [current] = await db
+        .select()
+        .from(users)
+        .where(eq(users.id, req.user!.id))
+        .limit(1);
+      if (!current)
+        return reply.code(404).send({
+          code: "NOT_FOUND",
+          message: "Compte introuvable.",
+        });
+      const emailChanged = parsed.data.email !== current.email;
+      if (
+        emailChanged &&
+        (!parsed.data.currentPassword ||
+          !(await argon2.verify(
+            current.passwordHash,
+            parsed.data.currentPassword,
+          )))
+      )
+        return reply.code(400).send({
+          code: "WRONG_PASSWORD",
+          message:
+            "Le mot de passe actuel est requis pour modifier l’adresse e-mail.",
+        });
+      try {
+        const updated = await db.transaction(async (tx) => {
+          const [row] = await tx
+            .update(users)
+            .set({
+              fullName: parsed.data.fullName,
+              phone: parsed.data.phone || null,
+              email: parsed.data.email || null,
+              updatedAt: new Date(),
+            })
+            .where(eq(users.id, req.user!.id))
+            .returning();
+          await tx.insert(auditLogs).values({
+            userId: req.user!.id,
+            action: "account.profile_updated",
+            entityType: "user",
+            entityId: req.user!.id,
+            newValuesJson: JSON.stringify({
+              fullName: row!.fullName,
+              phoneChanged: row!.phone !== current.phone,
+              emailChanged,
+            }),
+          });
+          return row!;
+        });
+        return { profile: accountProfile(updated) };
+      } catch (error) {
+        if (hasPostgresCode(error, "23505"))
+          return reply.code(409).send({
+            code: "CONFLICT",
+            message: "Cette adresse e-mail est déjà utilisée.",
+          });
+        throw error;
+      }
+    },
+  );
+  for (const path of [
+    "/api/account/change-password",
+    "/api/auth/change-password",
+  ] as const)
+  app.post(
+    path,
+    {
+      preHandler: authenticate,
+      config: { rateLimit: { max: 5, timeWindow: "5 minutes" } },
+    },
     async (req, reply) => {
       const p = changePasswordSchema.safeParse(req.body);
       if (!p.success)
         return reply.code(400).send({
           code: "VALIDATION_ERROR",
-          message: "Mot de passe trop faible",
+          message: "Vérifiez le nouveau mot de passe.",
+          fieldErrors: p.error.flatten().fieldErrors,
         });
       const found = await db
           .select()

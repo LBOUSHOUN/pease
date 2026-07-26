@@ -1,5 +1,6 @@
 mod db;
 mod exports;
+mod ocr;
 mod operations;
 mod reports;
 mod workforce;
@@ -8,6 +9,7 @@ use argon2::{
     Argon2,
 };
 use db::Database;
+use ocr::{BookOcrResult, OcrFailure, OcrRuntime, OcrStatus};
 use rand_core::OsRng;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -18,22 +20,75 @@ const DESKTOP_TOKEN_SERVICE: &str = "com.pc.doublelibrary";
 const LEGACY_DESKTOP_TOKEN_SERVICES: [&str; 2] = ["com.pc.maktaba-pos", "com.maktaba.pos"];
 const DESKTOP_TOKEN_ACCOUNT: &str = "desktop-session";
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppRuntimeStatus {
+    is_native: bool,
+    is_packaged: bool,
+    ocr_available: bool,
+}
+
+fn is_packaged_build() -> bool {
+    !cfg!(debug_assertions)
+}
+
+#[tauri::command]
+fn get_ocr_status(ocr: State<OcrRuntime>) -> OcrStatus {
+    ocr.status()
+}
+
+#[tauri::command]
+fn get_app_runtime_status(ocr: State<OcrRuntime>) -> AppRuntimeStatus {
+    AppRuntimeStatus {
+        is_native: true,
+        is_packaged: is_packaged_build(),
+        ocr_available: ocr.is_available(),
+    }
+}
+
+#[tauri::command]
+async fn extract_book_metadata_from_image(
+    image_bytes: Vec<u8>,
+    mime_type: String,
+    title_region: Option<bool>,
+    ocr: State<'_, OcrRuntime>,
+) -> Result<BookOcrResult, OcrFailure> {
+    let runtime = ocr.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime.extract(&image_bytes, &mime_type, title_region.unwrap_or(false))
+    })
+    .await
+    .map_err(|_| OcrFailure::new("OCR_PROCESS_FAILED"))?
+}
+
+fn validate_desktop_session_token(token: &str) -> Result<(), String> {
+    if token.len() < 32
+        || token.len() > 512
+        || token.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err("invalid_token: Jeton de session invalide.".to_string());
+    }
+    Ok(())
+}
+
 fn desktop_token_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(DESKTOP_TOKEN_SERVICE, DESKTOP_TOKEN_ACCOUNT)
-        .map_err(|_| "Stockage sécurisé indisponible.".to_string())
+        .map_err(|_| "credential_manager_unavailable: Stockage sécurisé indisponible.".to_string())
 }
 #[tauri::command]
 fn save_desktop_session_token(token: String) -> Result<(), String> {
-    if token.len() != 43
-        || !token
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err("Jeton de session invalide.".to_string());
-    }
-    desktop_token_entry()?
+    validate_desktop_session_token(&token)?;
+    let entry = desktop_token_entry()?;
+    entry
         .set_password(&token)
-        .map_err(|_| "Enregistrement sécurisé impossible.".to_string())
+        .map_err(|_| "credential_write_failed: Enregistrement sécurisé impossible.".to_string())?;
+    let verified = entry.get_password().map_err(|_| {
+        "credential_read_failed: Vérification de la session impossible.".to_string()
+    })?;
+    if verified != token {
+        return Err("credential_write_failed: Vérification de la session impossible.".to_string());
+    }
+    Ok(())
 }
 #[tauri::command]
 fn load_desktop_session_token() -> Result<Option<String>, String> {
@@ -56,14 +111,21 @@ fn load_desktop_session_token() -> Result<Option<String>, String> {
             }
             Ok(None)
         }
-        Err(_) => Err("Lecture du stockage sécurisé impossible.".to_string()),
+        Err(_) => {
+            Err("credential_read_failed: Lecture du stockage sécurisé impossible.".to_string())
+        }
     }
 }
 #[tauri::command]
 fn delete_desktop_session_token() -> Result<(), String> {
     match desktop_token_entry()?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
-        Err(_) => return Err("Suppression de la session sécurisée impossible.".to_string()),
+        Err(_) => {
+            return Err(
+                "credential_write_failed: Suppression de la session sécurisée impossible."
+                    .to_string(),
+            )
+        }
     }
     for service in LEGACY_DESKTOP_TOKEN_SERVICES {
         if let Ok(entry) = keyring::Entry::new(service, DESKTOP_TOKEN_ACCOUNT) {
@@ -1139,7 +1201,19 @@ fn list_cached_products(
 #[tauri::command]
 fn lookup_cached_product(code: String, db: State<Database>) -> Result<Option<Value>, String> {
     let c = db.connect()?;
-    let raw: Option<String> = c.query_row("SELECT payload_json FROM offline_products WHERE barcode=?1 OR internal_barcode=?1 OR sku=?1 LIMIT 1", [code.trim()], |r| r.get(0)).optional().map_err(db_err)?;
+    let normalized = code.trim();
+    let compact_isbn = normalized.replace([' ', '-'], "").to_uppercase();
+    let raw: Option<String> = c.query_row(
+        "SELECT payload_json FROM offline_products
+         WHERE is_active=1 AND (
+           lower(trim(coalesce(barcode,'')))=lower(?1)
+           OR lower(trim(coalesce(internal_barcode,'')))=lower(?1)
+           OR upper(replace(replace(coalesce(json_extract(payload_json,'$.isbn10'),''),'-',''),' ',''))=?2
+           OR upper(replace(replace(coalesce(json_extract(payload_json,'$.isbn13'),''),'-',''),' ',''))=?2
+         ) LIMIT 1",
+        params![normalized, compact_isbn],
+        |r| r.get(0),
+    ).optional().map_err(db_err)?;
     raw.map(|s| serde_json::from_str(&s).map_err(|_| "Cache produit corrompu".to_string()))
         .transpose()
 }
@@ -1479,12 +1553,18 @@ pub fn run() {
         .setup(|app| {
             let db = Database::new(app.handle())?;
             app.manage(db);
+            ocr::cleanup_stale_temp_dirs();
+            let resource_dir = app.path().resource_dir()?;
+            app.manage(OcrRuntime::new(&resource_dir));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             save_desktop_session_token,
             load_desktop_session_token,
             delete_desktop_session_token,
+            get_ocr_status,
+            get_app_runtime_status,
+            extract_book_metadata_from_image,
             save_offline_auth_snapshot,
             load_offline_auth_snapshot,
             clear_offline_auth_snapshot,
@@ -1550,6 +1630,10 @@ pub fn run() {
 mod tests {
     use super::*;
     #[test]
+    fn packaged_status_follows_the_rust_release_profile() {
+        assert_eq!(is_packaged_build(), !cfg!(debug_assertions));
+    }
+    #[test]
     fn password_roundtrip() {
         let h = hash_password("Secret123").unwrap();
         assert!(verify_password("Secret123", &h));
@@ -1584,5 +1668,37 @@ mod tests {
         assert!(!valid_offline_auth_snapshot(
             &json!({ "schemaVersion": 1, "token": "secret" })
         ));
+    }
+    #[test]
+    fn desktop_tokens_are_bounded_opaque_values_not_fixed_to_43_characters() {
+        for token in ["a".repeat(32), "x.y~z".repeat(20), "b".repeat(512)] {
+            assert!(validate_desktop_session_token(&token).is_ok());
+        }
+        for token in [
+            "".to_string(),
+            "a".repeat(31),
+            format!("{} {}", "a".repeat(32), "b"),
+            format!("{}\n", "a".repeat(32)),
+            format!("{}\u{0007}", "a".repeat(32)),
+            "a".repeat(513),
+        ] {
+            assert!(validate_desktop_session_token(&token).is_err());
+        }
+    }
+    #[test]
+    fn desktop_keyring_identifiers_are_stable() {
+        assert_eq!(DESKTOP_TOKEN_SERVICE, "com.pc.doublelibrary");
+        assert_eq!(DESKTOP_TOKEN_ACCOUNT, "desktop-session");
+    }
+    #[test]
+    #[ignore = "writes a disposable credential to the real OS credential manager"]
+    fn real_keyring_roundtrip_without_exposing_credential() {
+        let account = "desktop-session-rust-manual-test";
+        let entry = keyring::Entry::new(DESKTOP_TOKEN_SERVICE, account).unwrap();
+        let secret = format!("manual-test-{}", "x".repeat(32));
+        entry.set_password(&secret).unwrap();
+        assert_eq!(entry.get_password().unwrap(), secret);
+        entry.delete_credential().unwrap();
+        assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
     }
 }

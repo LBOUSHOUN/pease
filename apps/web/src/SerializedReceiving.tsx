@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import type { ProductListResponse, SafeUser, SerializedReceivingSession } from "@maktaba/shared-types";
 import { request } from "./api";
 import { analyzeBarcodeImport } from "./serialized-import";
+import { BarcodeInput } from "./BarcodeInput";
 
 const MAX_EXPECTED_QUANTITY = 1000;
 
@@ -47,13 +48,12 @@ export default function SerializedReceiving({ user }: { user: SafeUser }) {
     finally { setBusy(false); }
   };
 
-  const scan = async (event: FormEvent) => {
-    event.preventDefault();
+  const addBarcode = async (value: string) => {
     if (!session || busy) return;
     setBusy(true); setError(""); setMessage("");
     try {
       const next = await request<SerializedReceivingSession>(`/serialized-receiving/${session.id}/scans`, {
-        method: "POST", json: { barcode },
+        method: "POST", json: { barcode: value },
       });
       setSession(next); setBarcode("");
       setMessage(next.remainingQuantity === 0
@@ -138,10 +138,10 @@ export default function SerializedReceiving({ user }: { user: SafeUser }) {
         <div><small>Doublons</small><strong>{duplicateCount}</strong></div>
       </section>
       {session.status === "draft" && <>
-        <form onSubmit={scan} className="scanner receiving-scanner">
-          <label>Code-barres de l’unité
-            <input ref={input} value={barcode} onChange={(e) => setBarcode(e.target.value)} required autoComplete="off" placeholder="Scanner l’unité suivante" />
-          </label>
+        <form onSubmit={(event) => { event.preventDefault(); void addBarcode(barcode); }} className="scanner receiving-scanner">
+          <BarcodeInput inputRef={input} mode="serialized-unit" value={barcode}
+            onChange={setBarcode} onScan={addBarcode} required
+            label="Code-barres de l’unité" placeholder="Scanner l’unité suivante" />
           <button disabled={busy || session.remainingQuantity === 0}>Ajouter</button>
         </form>
         {canAdjust && <div className="receiving-adjust">

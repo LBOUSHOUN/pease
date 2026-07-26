@@ -26,6 +26,8 @@ export default function CameraScanner({
   close: () => void;
 }) {
   const video = useRef<HTMLVideoElement>(null),
+    closeButton = useRef<HTMLButtonElement>(null),
+    previouslyFocused = useRef<HTMLElement | null>(null),
     stream = useRef<MediaStream | undefined>(undefined),
     frame = useRef<number | undefined>(undefined),
     recent = useRef({ code: "", at: 0 }),
@@ -38,6 +40,24 @@ export default function CameraScanner({
     onScanRef.current = onScan;
     closeRef.current = close;
   }, [onScan, close]);
+  useEffect(() => {
+    previouslyFocused.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    closeButton.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      stop();
+      closeRef.current();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      previouslyFocused.current?.focus();
+    };
+  }, []);
   const stop = () => {
     if (frame.current) cancelAnimationFrame(frame.current);
     stream.current?.getTracks().forEach((track) => track.stop());
@@ -116,11 +136,12 @@ export default function CameraScanner({
     };
   }, [deviceId]);
   return (
-    <div className="modal" role="dialog" aria-modal="true">
+    <div className="modal" role="dialog" aria-modal="true" aria-labelledby="camera-scanner-title" data-scanner-blocking="true">
       <section className="card camera">
         <div className="title">
-          <h2>Scanner un code</h2>
+          <h2 id="camera-scanner-title">Scanner un code</h2>
           <button
+            ref={closeButton}
             type="button"
             onClick={() => {
               stop();

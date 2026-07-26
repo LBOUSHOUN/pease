@@ -4,7 +4,9 @@ export type ScannerOptions = {
   duplicateWindowMs?: number;
 };
 export const normalizeScannedCode = (value: string) =>
-  value.trim().replace(/^[,\u060C;]+|[,\u060C;]+$/g, "");
+  value
+    .trim()
+    .replace(/^(?:(?:ØŒ)|[,\u060C;])+|(?:(?:ØŒ)|[,\u060C;])+$/g, "");
 
 export class ScannerBuffer {
   private value = "";
@@ -15,27 +17,29 @@ export class ScannerBuffer {
     private emit: (code: string) => void,
     private options: ScannerOptions = {},
   ) {}
-  key(key: string, time = Date.now()) {
+  key(key: string, time = Date.now(), beforeEmit?: () => void) {
     const max = this.options.maxIntervalMs ?? 80,
       min = this.options.minLength ?? 3,
       duplicate = this.options.duplicateWindowMs ?? 750;
     if (key === "Enter") {
       const code = normalizeScannedCode(this.value);
       this.value = "";
-      if (
-        code.length >= min &&
-        !(code === this.lastCode && time - this.emittedAt < duplicate)
-      ) {
+      if (code.length >= min) {
+        beforeEmit?.();
+        if (code === this.lastCode && time - this.emittedAt < duplicate)
+          return true;
         this.lastCode = code;
         this.emittedAt = time;
         this.emit(code);
+        return true;
       }
-      return;
+      return false;
     }
-    if (key.length !== 1) return;
+    if (key.length !== 1) return false;
     if (this.last && time - this.last > max) this.value = "";
     this.value += key;
     this.last = time;
+    return false;
   }
 }
 export const isEditable = (target: EventTarget | null) => {

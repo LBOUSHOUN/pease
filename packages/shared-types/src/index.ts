@@ -15,6 +15,18 @@ export interface SafeUser {
   mustChangePassword: boolean;
   permissions: Permission[];
 }
+export interface AccountProfile {
+  id: number;
+  fullName: string;
+  username: string;
+  email: string | null;
+  phone: string | null;
+  role: Role;
+  permissions: Permission[];
+  isActive: boolean;
+  createdAt: string;
+  lastLoginAt: string | null;
+}
 export interface ApiError {
   code: string;
   message: string;
@@ -61,6 +73,12 @@ export interface ProductListRow {
   categoryId: number | null;
   categoryName: string | null;
   name: string;
+  author?: string | null;
+  isbn10?: string | null;
+  isbn13?: string | null;
+  publisher?: string | null;
+  publicationYear?: number | null;
+  bookLanguage?: string | null;
   productType: ProductType;
   inventoryMode?: "quantity" | "serialized";
   sku: string | null;
@@ -119,6 +137,23 @@ export interface ProductListResponse extends Pagination {
 }
 export interface ProductLookup {
   product: ProductListRow;
+}
+export type BarcodeMatchType =
+  | "serialized_unit"
+  | "original_barcode"
+  | "generated_barcode"
+  | "isbn13"
+  | "isbn10"
+  | "alternate_barcode";
+export interface BarcodeResolution {
+  matchType: BarcodeMatchType;
+  normalizedCode: string;
+  product: ProductListRow;
+  unit: {
+    id: number;
+    barcode: string;
+    status: "available" | "sold" | "damaged" | "lost" | "inactive";
+  } | null;
 }
 export interface StockSummary extends ProductListRow {
   stockValueCents?: number;

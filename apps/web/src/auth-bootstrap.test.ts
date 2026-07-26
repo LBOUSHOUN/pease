@@ -34,7 +34,7 @@ describe("authentication initialization", () => {
     expect(mocks.request.mock.calls.filter((call) => call[0] === "/health")).toHaveLength(2);
   });
   it("classifies a health timeout as API unavailability", async () => {
-    mocks.request.mockRejectedValueOnce(new DOMException("timeout", "AbortError"));
+    mocks.request.mockRejectedValueOnce(new DOMException("timeout", "TimeoutError"));
     await expect(testApiHealth()).rejects.toMatchObject({ status: 0, category: "timeout" });
   });
 });

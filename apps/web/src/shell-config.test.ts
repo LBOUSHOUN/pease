@@ -14,7 +14,15 @@ describe("desktop development launcher", () => {
       { url: "https://pease-production.up.railway.app/**" },
     ]);
     expect(JSON.stringify(http)).not.toContain("http://*");
-    expect(read("apps/web/.env.production").trim()).toBe("VITE_API_URL=https://pease-production.up.railway.app/api");
+    expect(read("apps/web/.env.production")).toContain("VITE_API_URL=/api");
+    expect(read("apps/web/.env.production")).toContain(
+      "VITE_DESKTOP_API_URL=https://pease-production.up.railway.app/api",
+    );
+    const caddy = read("apps/web/Caddyfile");
+    expect(caddy).toContain("handle /api/*");
+    expect(caddy).toContain(
+      "reverse_proxy https://pease-production.up.railway.app",
+    );
   });
   it("uses one strict canonical Vite URL across root, Vite and Tauri", () => {
     const rootPackage = JSON.parse(read("package.json"));
@@ -63,10 +71,36 @@ describe("shared application shell", () => {
     expect(css).toContain("overflow-x: hidden");
   });
 
+  it("keeps the dashboard active state exact and every sidebar target registered", () => {
+    const app = read("apps/web/src/App.tsx");
+    expect(app).toContain('<NavLink to="/" end>Tableau de bord</NavLink>');
+    const menuTargets = [
+      "/account", "/products", "/categories", "/stock", "/stock/receive",
+      "/register", "/pos", "/offline-queue", "/sales", "/customers",
+      "/suppliers", "/purchases", "/expenses", "/returns", "/employees",
+      "/reports", "/audit", "/settings", "/backups",
+    ];
+    for (const target of menuTargets) {
+      expect(app).toContain(`path="${target}"`);
+    }
+  });
+
+  it("downloads serialized-unit CSV through the authenticated client", () => {
+    const products = read("apps/web/src/Phase2.tsx");
+    expect(products).toContain('downloadFile(');
+    expect(products).toContain('"/serialized-units/export.csv"');
+    expect(products).not.toContain('href={buildApiUrl("/serialized-units/export.csv")}');
+    expect(products).toContain('disabled={exporting}');
+  });
+
   it("keeps a desktop scan while navigating globally to the POS", () => {
     const app = read("apps/web/src/App.tsx");
-    expect(app).toContain("enqueueGlobalScan(barcode)");
-    expect(app).toContain('navigate("/pos")');
+    const scanner = read("apps/web/src/global-scanner.ts");
+    expect(app).toContain('scannerContexts.dispatch({ code: barcode, source: "usb" })');
+    expect(app).toContain("queueScanForPos(code, loc.pathname, navigate)");
+    expect(scanner.indexOf("enqueue(barcode)")).toBeLessThan(
+      scanner.indexOf('navigate("/pos")'),
+    );
     expect(app).toContain("Scanner global activé");
   });
 
