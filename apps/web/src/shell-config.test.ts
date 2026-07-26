@@ -104,6 +104,15 @@ describe("shared application shell", () => {
     expect(app).toContain("Scanner global activé");
   });
 
+  it("preserves /api when proxying the production web service", () => {
+    const caddy = read("apps/web/Caddyfile");
+    expect(caddy).toContain("handle /api/*");
+    expect(caddy).not.toContain("handle_path /api/*");
+    expect(caddy).toContain(
+      "reverse_proxy https://pease-production.up.railway.app",
+    );
+  });
+
   it("keeps dashboard metric labels and values in separate elements", () => {
     const dashboard = read("apps/web/src/Dashboard.tsx");
     expect(dashboard).toContain('className="metric-label"');

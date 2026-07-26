@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildApiUrl, request, resolveApiBaseUrl } from "./api";
+import {
+  buildApiUrl,
+  request,
+  resolveApiBaseUrl,
+  resolveHealthUrl,
+} from "./api";
 afterEach(() => vi.unstubAllGlobals());
 describe("API client", () => {
   it("uses the canonical loopback host for desktop development", () => {
@@ -113,6 +118,53 @@ describe("API client", () => {
     expect(
       resolveApiBaseUrl({
         env: {
+          VITE_API_URL: "https://pease-production.up.railway.app/api",
+        },
+        location: {
+          protocol: "https:",
+          origin: "https://doublelibrary.online",
+        },
+      }),
+    ).toBe("/api");
+  });
+  it("defaults a production browser without VITE_API_URL to /api", () => {
+    const context = {
+      env: { PROD: true },
+      location: {
+        protocol: "https:",
+        origin: "https://doublelibrary.online",
+      },
+    };
+    expect(resolveApiBaseUrl(context)).toBe("/api");
+    expect(resolveHealthUrl(context)).toBe(
+      "https://doublelibrary.online/api/health",
+    );
+  });
+  it("does not duplicate or strip the /api path", () => {
+    const context = {
+      env: { PROD: true, VITE_API_URL: "/api" },
+      location: {
+        protocol: "https:",
+        origin: "https://doublelibrary.online",
+      },
+    };
+    expect(buildApiUrl("/health", context)).toBe("/api/health");
+    expect(buildApiUrl("/api/health", context)).toBe("/api/health");
+  });
+  it("ignores a cross-origin browser API value instead of blocking requests", () => {
+    expect(
+      resolveApiBaseUrl({
+        env: { PROD: true, VITE_API_URL: "::::invalid" },
+        location: {
+          protocol: "https:",
+          origin: "https://doublelibrary.online",
+        },
+      }),
+    ).toBe("/api");
+    expect(
+      resolveApiBaseUrl({
+        env: {
+          PROD: true,
           VITE_API_URL: "https://pease-production.up.railway.app/api",
         },
         location: {

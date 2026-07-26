@@ -2,7 +2,9 @@
 	encode zstd gzip
 
 	handle /api/* {
-		reverse_proxy https://pease-production.up.railway.app
+		reverse_proxy https://pease-production.up.railway.app {
+			header_up Host pease-production.up.railway.app
+		}
 	}
 
 	handle {
