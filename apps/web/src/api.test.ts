@@ -63,16 +63,17 @@ describe("API client", () => {
     );
   });
   it.each([
-    [401, "BAD_CREDENTIALS", "Identifiant ou mot de passe incorrect."],
+    [401, "INVALID_CREDENTIALS", "Identifiant ou mot de passe incorrect."],
+    [401, "ACCOUNT_DISABLED", "Ce compte est désactivé."],
     [
       429,
-      "RATE_LIMITED",
+      "TOO_MANY_ATTEMPTS",
       "Trop de tentatives. Réessayez dans quelques minutes.",
     ],
     [
       500,
       "INTERNAL_ERROR",
-      "Une erreur interne est survenue. Réessayez plus tard.",
+      "Une erreur interne empêche la connexion.",
     ],
   ])("maps HTTP %s", async (status, code, message) => {
     vi.stubGlobal(
@@ -95,9 +96,38 @@ describe("API client", () => {
     await expect(request("/x")).rejects.toEqual(
       expect.objectContaining({
         status: 0,
+        isNetworkError: true,
         message: "Impossible de joindre le serveur. Vérifiez votre connexion.",
       }),
     );
+  });
+  it("does not classify an HTTP 401 as a network failure", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ code: "INVALID_CREDENTIALS" }), {
+          status: 401,
+        }),
+      ),
+    );
+    await expect(request("/auth/login")).rejects.toMatchObject({
+      status: 401,
+      code: "INVALID_CREDENTIALS",
+      isNetworkError: false,
+    });
+  });
+  it("uses a safe plain-text HTTP response when JSON is absent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("Service temporairement indisponible", { status: 503 }),
+      ),
+    );
+    await expect(request("/x")).rejects.toMatchObject({
+      status: 503,
+      message: "Service temporairement indisponible",
+      isNetworkError: false,
+    });
   });
   it("rejects an HTML SPA fallback instead of treating login as successful", async () => {
     vi.stubGlobal(

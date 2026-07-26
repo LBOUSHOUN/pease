@@ -1,11 +1,13 @@
 import postgres from "postgres";
 
 const identifier = String(process.argv[2] ?? "").trim().toLowerCase();
-if (!identifier || !process.env.DATABASE_URL) {
+const databaseUrl =
+  process.env.DATABASE_PUBLIC_URL ?? process.env.DATABASE_URL;
+if (!identifier || !databaseUrl) {
   console.error("Usage: DATABASE_URL=... node scripts/inspect-user-status.mjs <identifiant>");
   process.exitCode = 2;
 } else {
-  const sql = postgres(process.env.DATABASE_URL, {
+  const sql = postgres(databaseUrl, {
     max: 1,
     prepare: false,
     connect_timeout: 10,

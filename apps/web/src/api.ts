@@ -16,6 +16,8 @@ export type ApiRequest = Omit<RequestInit, "body"> & {
   desktopTokenOverride?: string;
 };
 export class ApiFailure extends Error {
+  readonly isNetworkError: boolean;
+  readonly code: string | null;
   constructor(
     public data: ApiError,
     public status: number,
@@ -24,30 +26,40 @@ export class ApiFailure extends Error {
   ) {
     super(data.message);
     this.name = "ApiFailure";
+    this.isNetworkError = status === 0;
+    this.code = data.code ?? null;
   }
 }
 
 const messages: Record<number, string> = {
   400: "Vérifiez les informations saisies.",
   401: "Votre session a expiré. Veuillez vous reconnecter.",
-  403: "Vous n’avez pas l’autorisation d’effectuer cette action.",
+  403: "Vous n’êtes pas autorisé à accéder à cette application.",
   404: "Ressource introuvable.",
   409: "Cette opération existe déjà ou entre en conflit avec les données actuelles.",
   429: "Trop de tentatives. Réessayez dans quelques minutes.",
-  500: "Une erreur interne est survenue. Réessayez plus tard.",
+  500: "Une erreur interne empêche la connexion.",
 };
 
 function normalizedError(
   status: number,
   body: unknown,
   requestId?: string,
+  fallbackText?: string,
 ): ApiError {
   const candidate =
     body && typeof body === "object" ? (body as Partial<ApiError>) : {};
-  const loginFailure = status === 401 && candidate.code === "BAD_CREDENTIALS";
+  const loginFailure =
+    status === 401 &&
+    ["BAD_CREDENTIALS", "INVALID_CREDENTIALS"].includes(candidate.code ?? "");
+  const disabled =
+    status === 401 &&
+    ["INACTIVE_USER", "ACCOUNT_DISABLED", "MEMBERSHIP_DISABLED"].includes(
+      candidate.code ?? "",
+    );
   const safeServerMessage =
     typeof candidate.message === "string" &&
-    ["NOT_FOUND", "CONFLICT", "VALIDATION_ERROR", "INACTIVE_USER", "PASSWORD_CHANGE_REQUIRED"].includes(
+    ["NOT_FOUND", "CONFLICT", "VALIDATION_ERROR", "ACCOUNT_DISABLED", "MEMBERSHIP_DISABLED", "PASSWORD_CHANGE_REQUIRED"].includes(
       candidate.code ?? "",
     )
       ? candidate.message
@@ -59,6 +71,12 @@ function normalizedError(
       safeServerMessage ??
       (loginFailure
         ? "Identifiant ou mot de passe incorrect."
+        : disabled
+          ? "Ce compte est désactivé."
+          : fallbackText &&
+              fallbackText.length <= 240 &&
+              !/<[a-z][\s\S]*>/iu.test(fallbackText)
+            ? fallbackText
         : (messages[status] ?? messages[500]!)),
     fieldErrors: candidate.fieldErrors,
     requestId: candidate.requestId ?? requestId,
@@ -161,13 +179,20 @@ export async function request<T>(
     const retry = response.headers.get("retry-after");
     const seconds = retry && /^\d+$/.test(retry) ? Number(retry) : undefined;
     const failure = new ApiFailure(
-      normalizedError(response.status, parsed),
+      normalizedError(
+        response.status,
+        parsed,
+        undefined,
+        parsed === undefined ? text : undefined,
+      ),
       response.status,
       seconds,
     );
     if (
       response.status === 401 &&
-      failure.data.code !== "BAD_CREDENTIALS" &&
+      !["BAD_CREDENTIALS", "INVALID_CREDENTIALS", "ACCOUNT_DISABLED"].includes(
+        failure.data.code,
+      ) &&
       typeof window !== "undefined"
     ) {
       if (native) {
@@ -228,7 +253,12 @@ export async function downloadFile(path: string, fallbackFilename: string) {
     }
 
     throw new ApiFailure(
-      normalizedError(response.status, parsed),
+      normalizedError(
+        response.status,
+        parsed,
+        undefined,
+        parsed === undefined ? text : undefined,
+      ),
       response.status,
     );
   }
