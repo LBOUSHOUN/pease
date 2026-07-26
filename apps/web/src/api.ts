@@ -1,10 +1,14 @@
 import type { ApiError, SafeUser } from "@maktaba/shared-types";
-import { isTauri } from "@tauri-apps/api/core";
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { deleteDesktopSessionToken, desktopAuthorization, isNativeDesktop } from "./desktop-session";
 import { clearOfflineAuthSnapshot } from "./offline-auth";
 import { recordConnectionAttempt, type ConnectionErrorCategory } from "./connection-diagnostics";
 import { isAbortError } from "./request-error";
+import {
+  buildApiUrl,
+  resolveHealthUrl,
+} from "./api-base";
+export { buildApiUrl, resolveApiBaseUrl, resolveHealthUrl } from "./api-base";
 
 export type ApiRequest = Omit<RequestInit, "body"> & {
   json?: unknown;
@@ -32,49 +36,6 @@ const messages: Record<number, string> = {
   429: "Trop de tentatives. Réessayez dans quelques minutes.",
   500: "Une erreur interne est survenue. Réessayez plus tard.",
 };
-
-type ApiBaseContext = {
-  env?: Record<string, string | boolean | undefined>;
-  location?: { protocol?: string; origin?: string };
-};
-
-export function resolveApiBaseUrl(context: ApiBaseContext = {}): string {
-  const env = context.env ?? import.meta.env;
-  const protocol = context.location?.protocol;
-  const browserProtocol =
-    typeof window !== "undefined" ? window.location.protocol : undefined;
-  const activeProtocol = protocol ?? browserProtocol;
-  const native = activeProtocol === "tauri:" || isTauri();
-  if (native) {
-    const desktopConfigured =
-      typeof env.VITE_DESKTOP_API_URL === "string"
-        ? env.VITE_DESKTOP_API_URL.trim()
-        : "";
-    const legacyConfigured =
-      typeof env.VITE_API_URL === "string" &&
-      /^https?:\/\//u.test(env.VITE_API_URL.trim())
-        ? env.VITE_API_URL.trim()
-        : "";
-    const configured = desktopConfigured || legacyConfigured;
-    if (configured) return configured.replace(/\/$/, "");
-    if (env.DEV === true) return "http://127.0.0.1:3000/api";
-    throw new Error(
-      "VITE_DESKTOP_API_URL doit être configurée pour l’application de bureau.",
-    );
-  }
-  const configured =
-    typeof env.VITE_API_URL === "string" ? env.VITE_API_URL.trim() : "";
-  if (!configured || /^https?:\/\//u.test(configured)) return "/api";
-  return configured.replace(/\/$/, "");
-}
-
-export function buildApiUrl(path: string, context: ApiBaseContext = {}): string {
-  const base = resolveApiBaseUrl(context);
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  return base.startsWith("http://") || base.startsWith("https://")
-    ? `${base}${normalizedPath}`
-    : `${base}${normalizedPath}`;
-}
 
 function normalizedError(
   status: number,
@@ -137,7 +98,7 @@ export async function request<T>(
     throw error;
   }
   const base = url.slice(0, url.length - (path.startsWith("/") ? path.length : path.length + 1));
-  recordConnectionAttempt({ apiBaseUrl: base, healthUrl: buildApiUrl("/health"), transport: native ? "native" : "browser", fetchAttempted: true, category: "none", errorName: "—", message: "Requête démarrée" });
+  recordConnectionAttempt({ apiBaseUrl: base, healthUrl: resolveHealthUrl(), transport: native ? "native" : "browser", fetchAttempted: true, category: "none", errorName: "—", message: "Requête démarrée" });
   if (native) console.info("[desktop-network] request started", { origin: typeof window === "undefined" ? "indisponible" : window.location.origin, apiBaseUrl: base, transport: "native", path });
   let response: Response;
   try {

@@ -1,4 +1,5 @@
 import { isNativeDesktop } from "./desktop-session";
+import { resolveApiBaseUrl, resolveHealthUrl } from "./api-base";
 
 export type ConnectionErrorCategory =
   | "none" | "network" | "timeout" | "cancelled" | "http" | "api_url"
@@ -29,10 +30,18 @@ export function recordConnectionAttempt(value: Partial<ConnectionDiagnostics>) {
 }
 
 export function connectionDiagnostics(): ConnectionDiagnostics {
-  const apiBaseUrl = last.apiBaseUrl ?? "Configuration indisponible",
-    healthUrl = last.healthUrl ?? "Configuration indisponible";
   const location = typeof window === "undefined" ? undefined : window.location;
   const native = isNativeDesktop();
+  let configuredBase = "Configuration invalide";
+  let configuredHealth = "Configuration invalide";
+  try {
+    configuredBase = resolveApiBaseUrl({ native });
+    configuredHealth = resolveHealthUrl({ native });
+  } catch {
+    // The safe diagnostic intentionally never exposes environment contents.
+  }
+  const apiBaseUrl = last.apiBaseUrl ?? configuredBase,
+    healthUrl = last.healthUrl ?? configuredHealth;
   return {
     applicationOrigin: location?.origin ?? "indisponible",
     protocol: location?.protocol ?? "indisponible",
