@@ -27,6 +27,7 @@ import { BarcodeInput } from "./BarcodeInput";
 import { isAbortError } from "./request-error";
 import { applyBarcodePrefill, readBarcodePrefill } from "./product-create-flow";
 import { isTauriRuntime, markCachedProductArchived, readQueueAsync, refreshOfflineCache } from "./offline-pos";
+import { PortalDropdown } from "./PortalDropdown";
 const has = (u: SafeUser, p: string) => u.permissions.includes(p);
 async function refreshProductCache() {
   if (!isTauriRuntime()) return;
@@ -68,30 +69,16 @@ function ProductLifecycleActions({ product, user, offline, changed, showDeleteEx
   </>;
 }
 function ProductActionsMenu({ product, user, changed }: { product: ProductListRow; user: SafeUser; changed: () => void }) {
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, [open]);
   return (
-    <div className="action-menu">
-      <button type="button" className="secondary action-menu-trigger" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-        Actions
-      </button>
-      {open && (
-        <div className="action-menu-panel" role="menu">
-          <Link role="menuitem" to={`/products/${product.id}`} onClick={() => setOpen(false)}>Voir</Link>
-          {product.isActive && has(user, "products.edit") && <Link role="menuitem" to={`/products/${product.id}/edit`} onClick={() => setOpen(false)}>Modifier</Link>}
-          {product.isActive && has(user, "labels.print") && <Link role="menuitem" to={`/products/${product.id}/label`} onClick={() => setOpen(false)}>Imprimer l'étiquette</Link>}
-          {product.isActive && product.trackStock && product.inventoryMode === "quantity" && has(user, "stock.adjust") && <Link role="menuitem" to={`/stock/adjust?productId=${product.id}`} onClick={() => setOpen(false)}>Ajuster le stock</Link>}
-          <ProductLifecycleActions product={product} user={user} offline={false} changed={() => { setOpen(false); changed(); }} showDeleteExplanation />
-        </div>
-      )}
-    </div>
+    <PortalDropdown label="Actions">
+      {(close) => <>
+        <Link role="menuitem" tabIndex={-1} to={`/products/${product.id}`} onClick={close}>Voir</Link>
+        {product.isActive && has(user, "products.edit") && <Link role="menuitem" tabIndex={-1} to={`/products/${product.id}/edit`} onClick={close}>Modifier</Link>}
+        {product.isActive && has(user, "labels.print") && <Link role="menuitem" tabIndex={-1} to={`/products/${product.id}/label`} onClick={close}>Imprimer l'étiquette</Link>}
+        {product.isActive && product.trackStock && product.inventoryMode === "quantity" && has(user, "stock.adjust") && <Link role="menuitem" tabIndex={-1} to={`/stock/adjust?productId=${product.id}`} onClick={close}>Ajuster le stock</Link>}
+        <ProductLifecycleActions product={product} user={user} offline={false} changed={() => { close(); changed(); }} showDeleteExplanation />
+      </>}
+    </PortalDropdown>
   );
 }
 function useDebounced(value: string, ms = 300) {
@@ -334,6 +321,7 @@ export function CategoryForm({ edit = false }: { edit?: boolean }) {
         <label>
           Description
           <textarea
+            name="description"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />
@@ -615,6 +603,65 @@ type ProductFormState = {
   shelfLocation: string;
   trackStock: boolean;
 };
+type ProductEditablePayload = {
+  categoryId: number;
+  name: string;
+  description: string | null;
+  productType: "physical_product" | "service";
+  inventoryMode: "quantity" | "serialized";
+  sku: string | null;
+  manufacturerBarcode: string | null;
+  purchasePriceCents: number;
+  sellingPriceCents: number;
+  wholesalePriceCents: number;
+  wholesaleMinQuantity: number;
+  minimumStock: number;
+  unit: string;
+  shelfLocation: string | null;
+  trackStock: boolean;
+};
+export const productEditablePayload = (
+  form: ProductFormState,
+): ProductEditablePayload => ({
+  categoryId: Number(form.categoryId),
+  name: form.name.trim(),
+  description: form.description.trim() || null,
+  productType: form.productType,
+  inventoryMode:
+    form.productType === "service" ? "quantity" : form.inventoryMode,
+  sku: form.sku.trim() || null,
+  manufacturerBarcode: form.manufacturerBarcode.trim() || null,
+  purchasePriceCents: madToCents(form.purchasePrice),
+  sellingPriceCents: madToCents(form.sellingPrice),
+  wholesalePriceCents: madToCents(form.wholesalePrice),
+  wholesaleMinQuantity: Number(form.wholesaleMinQuantity),
+  minimumStock: Number(form.minimumStock),
+  unit: form.unit.trim(),
+  shelfLocation: form.shelfLocation.trim() || null,
+  trackStock: form.productType === "service" ? false : form.trackStock,
+});
+const changedProductFields = (
+  current: ProductEditablePayload,
+  original: ProductEditablePayload | null,
+) =>
+  original
+    ? Object.fromEntries(
+        Object.entries(current).filter(
+          ([key, value]) =>
+            value !== original[key as keyof ProductEditablePayload],
+        ),
+      )
+    : current;
+function FieldError({
+  errors,
+  name,
+}: {
+  errors: Record<string, string[]>;
+  name: keyof ProductEditablePayload | "initialQuantity";
+}) {
+  const message = errors[name]?.[0];
+  return message ? <small className="field-error">{message}</small> : null;
+}
 const initial: ProductFormState = {
   categoryId: "",
   name: "",
@@ -646,16 +693,30 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
     [busy, setBusy] = useState(false),
     [generating, setGenerating] = useState(false),
     [error, setError] = useState(prefill.error),
+    [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({}),
+    [firstInvalidField, setFirstInvalidField] = useState(""),
     [created, setCreated] = useState<ProductDetail>(),
-    barcodeInput = useRef<HTMLInputElement>(null);
+    barcodeInput = useRef<HTMLInputElement>(null),
+    formElement = useRef<HTMLFormElement>(null),
+    originalPayload = useRef<ProductEditablePayload | null>(null);
+  useEffect(() => {
+    if (!firstInvalidField) return;
+    if (firstInvalidField === "manufacturerBarcode")
+      barcodeInput.current?.focus();
+    else
+      formElement.current
+        ?.querySelector<HTMLElement>(`[name="${firstInvalidField}"]`)
+        ?.focus();
+    setFirstInvalidField("");
+  }, [fieldErrors, firstInvalidField]);
   useEffect(() => {
     request<CategoryListResponse>(
       "/categories?pageSize=100&status=active",
     ).then((x) => setCategories(x.rows));
     if (edit)
       request<ProductDetail>(`/products/${id}`)
-        .then((x) =>
-          setForm({
+        .then((x) => {
+          const loaded: ProductFormState = {
             categoryId: String(x.categoryId ?? ""),
             name: x.name,
             description: x.description ?? "",
@@ -675,8 +736,10 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
             unit: x.unit,
             shelfLocation: x.shelfLocation ?? "",
             trackStock: x.trackStock,
-          }),
-        )
+          };
+          originalPayload.current = productEditablePayload(loaded);
+          setForm(loaded);
+        })
         .catch((e) => setError(e.message));
   }, [edit, id]);
   const set = <K extends keyof ProductFormState>(
@@ -726,27 +789,19 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
     e.preventDefault();
     if (busy) return;
     try {
-      const body = {
-        categoryId: Number(form.categoryId),
-        name: form.name,
-        description: form.description,
-        productType: form.productType,
-        inventoryMode: form.productType === "service" ? "quantity" : form.inventoryMode,
-        sku: form.sku,
-        manufacturerBarcode: form.manufacturerBarcode,
-        purchasePriceCents: madToCents(form.purchasePrice),
-        sellingPriceCents: madToCents(form.sellingPrice),
+      setError("");
+      setFieldErrors({});
+      const editable = productEditablePayload(form);
+      const body = edit
+        ? changedProductFields(editable, originalPayload.current)
+        : {
+            ...editable,
         initialQuantity:
-          !edit && form.productType === "physical_product" && form.inventoryMode === "quantity"
+              form.productType === "physical_product" &&
+              form.inventoryMode === "quantity"
             ? Number(form.initialQuantity)
             : 0,
-        wholesalePriceCents: madToCents(form.wholesalePrice),
-        wholesaleMinQuantity: Number(form.wholesaleMinQuantity),
-        minimumStock: Number(form.minimumStock),
-        unit: form.unit,
-        shelfLocation: form.shelfLocation,
-        trackStock: form.productType === "service" ? false : form.trackStock,
-      };
+          };
       setBusy(true);
       if (edit) {
         await request(`/products/${id}`, { method: "PATCH", json: body });
@@ -759,6 +814,16 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erreur");
+      if (e instanceof ApiFailure && e.data.fieldErrors) {
+        const errors = Object.fromEntries(
+          Object.entries(e.data.fieldErrors).filter(
+            (entry): entry is [string, string[]] => Array.isArray(entry[1]),
+          ),
+        );
+        setFieldErrors(errors);
+        const first = Object.keys(errors)[0];
+        setFirstInvalidField(first ?? "");
+      }
     } finally {
       setBusy(false);
     }
@@ -785,11 +850,12 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
           <button type="button" className="secondary" onClick={() => nav(`/products/${created.id}/label`)}>Imprimer l’étiquette</button>
         </section>
       )}
-      {!created && <form onSubmit={submit} className="product-form grid-form">
+      {!created && <form ref={formElement} onSubmit={submit} className="product-form grid-form">
         <h2 className="form-section-title">Informations principales</h2>
         <label>
           Catégorie
           <select
+            name="categoryId"
             value={form.categoryId}
             onChange={(e) => set("categoryId", e.target.value)}
             required
@@ -801,18 +867,22 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
               </option>
             ))}
           </select>
+          <FieldError errors={fieldErrors} name="categoryId" />
         </label>
         <label>
           Nom
           <input
+            name="name"
             value={form.name}
             onChange={(e) => set("name", e.target.value)}
             required
           />
+          <FieldError errors={fieldErrors} name="name" />
         </label>
         <label>
           Type
           <select
+            name="productType"
             value={form.productType}
             onChange={(e) =>
               set(
@@ -828,9 +898,11 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
         <label>
           Description
           <textarea
+            name="description"
             value={form.description}
             onChange={(e) => set("description", e.target.value)}
           />
+          <FieldError errors={fieldErrors} name="description" />
         </label>
         {form.productType === "physical_product" && (
           <details className="advanced-options">
@@ -853,9 +925,11 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
         <label>
           SKU
           <input
+            name="sku"
             value={form.sku}
             onChange={(e) => set("sku", e.target.value)}
           />
+          <FieldError errors={fieldErrors} name="sku" />
         </label>
         <h2 className="form-section-title">Code-barres</h2>
         <div className="barcode-field form-section-card">
@@ -866,6 +940,7 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
             onChange={(value) => set("manufacturerBarcode", value)}
             onScan={validateScannedBarcode}
           />
+          <FieldError errors={fieldErrors} name="manufacturerBarcode" />
           <span className="inline-actions">
             <button type="button" className="secondary barcode-generate-action" disabled={generating || busy || offline || form.productType === "service"} onClick={generateBarcode}>{generating ? "Génération…" : "Générer"}</button>
             {user.permissions.includes("labels.print") && <button type="button" className="secondary barcode-print-action" disabled={!edit || !id || !form.name.trim()} onClick={() => id && nav(`/products/${id}/label`)}>Imprimer l’étiquette</button>}
@@ -878,25 +953,30 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
         <label>
           Prix d'achat MAD
           <input
+            name="purchasePriceCents"
             inputMode="decimal"
             value={form.purchasePrice}
             onChange={(e) => set("purchasePrice", e.target.value)}
           />
+          <FieldError errors={fieldErrors} name="purchasePriceCents" />
         </label>
         <label>
           Prix de vente MAD
           <input
+            name="sellingPriceCents"
             inputMode="decimal"
             value={form.sellingPrice}
             onChange={(e) => set("sellingPrice", e.target.value)}
             required
           />
+          <FieldError errors={fieldErrors} name="sellingPriceCents" />
         </label>
         <h2 className="form-section-title">Stock</h2>
         {!edit && form.productType === "physical_product" && form.inventoryMode === "quantity" && form.trackStock && (
           <label>
             Quantité initiale
             <input
+              name="initialQuantity"
               type="number"
               min="0"
               max="100000"
@@ -904,35 +984,42 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
               value={form.initialQuantity}
               onChange={(e) => set("initialQuantity", e.target.value)}
             />
+            <FieldError errors={fieldErrors} name="initialQuantity" />
           </label>
         )}
         <label>
           Prix de gros MAD
           <input
+            name="wholesalePriceCents"
             inputMode="decimal"
             value={form.wholesalePrice}
             onChange={(e) => set("wholesalePrice", e.target.value)}
           />
+          <FieldError errors={fieldErrors} name="wholesalePriceCents" />
         </label>
         <label>
           Quantité min. gros
           <input
+            name="wholesaleMinQuantity"
             type="number"
             min="0"
             value={form.wholesaleMinQuantity}
             onChange={(e) => set("wholesaleMinQuantity", e.target.value)}
           />
+          <FieldError errors={fieldErrors} name="wholesaleMinQuantity" />
         </label>
         {form.productType === "physical_product" && (
           <>
             <label>
               Stock minimum
               <input
+                name="minimumStock"
                 type="number"
                 min="0"
                 value={form.minimumStock}
                 onChange={(e) => set("minimumStock", e.target.value)}
               />
+              <FieldError errors={fieldErrors} name="minimumStock" />
             </label>
             <label className="stock-toggle">
               <input
@@ -947,22 +1034,23 @@ export function ProductForm({ edit = false, user, offline = false }: { edit?: bo
         <label>
           Unité
           <input
+            name="unit"
             value={form.unit}
             onChange={(e) => set("unit", e.target.value)}
             required
           />
+          <FieldError errors={fieldErrors} name="unit" />
         </label>
         <label>
           Emplacement
           <input
+            name="shelfLocation"
             value={form.shelfLocation}
             onChange={(e) => set("shelfLocation", e.target.value)}
           />
+          <FieldError errors={fieldErrors} name="shelfLocation" />
         </label>
         <div className="actions product-form-actions">
-          <button disabled={busy}>
-            {busy ? "Enregistrement…" : "Enregistrer"}
-          </button>
           <button
             type="button"
             className="secondary"
