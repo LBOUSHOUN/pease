@@ -6,6 +6,7 @@ import "@testing-library/jest-dom/vitest";
 import type { SafeUser } from "@maktaba/shared-types";
 import { ProductForm } from "./Phase2";
 import { request } from "./api";
+import { ApiFailure } from "./api";
 
 vi.mock("./api", async (original) => {
   const actual = await original<typeof import("./api")>();
@@ -27,6 +28,8 @@ function renderRoute(offline = false, initialEntry = "/products/new") {
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
         <Route path="/products/new" element={<ProductForm user={admin} offline={offline} />} />
+        <Route path="/products/:id/edit" element={<ProductForm edit user={admin} offline={offline} />} />
+        <Route path="/products" element={<p>Liste produits</p>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -68,5 +71,90 @@ describe("actual /products/new route", () => {
     renderRoute(false);
     fireEvent.change(screen.getByLabelText("Type"), { target: { value: "service" } });
     expect(screen.getByRole("button", { name: "Générer" })).toBeDisabled();
+  });
+});
+
+const existingProduct = {
+  id: 7,
+  categoryId: 2,
+  categoryName: "Livres",
+  name: "Ancien nom",
+  description: null,
+  productType: "physical_product",
+  inventoryMode: "quantity",
+  sku: null,
+  manufacturerBarcode: "941798495231",
+  internalBarcode: "MKT000000007",
+  qrIdentifier: "PROD-7",
+  purchasePriceCents: 1000,
+  sellingPriceCents: 2000,
+  wholesalePriceCents: 1800,
+  wholesaleMinQuantity: 2,
+  minimumStock: 1,
+  currentStock: 4,
+  unit: "unité",
+  shelfLocation: null,
+  trackStock: true,
+  isActive: true,
+};
+
+describe("actual /products/:id/edit route", () => {
+  afterEach(cleanup);
+  beforeEach(() => {
+    vi.mocked(request).mockReset();
+    vi.mocked(request)
+      .mockResolvedValueOnce({ rows: [{ id: 2, name: "Livres" }] } as never)
+      .mockResolvedValueOnce(existingProduct as never);
+  });
+
+  it("sends only the changed Arabic name and preserves the unchanged UPC-A barcode", async () => {
+    vi.mocked(request).mockResolvedValueOnce(existingProduct as never);
+    renderRoute(false, "/products/7/edit");
+    const name = await screen.findByLabelText("Nom");
+    fireEvent.change(name, { target: { value: "الكتاب الجديد" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enregistrer les modifications" }));
+    await waitFor(() =>
+      expect(vi.mocked(request)).toHaveBeenCalledWith("/products/7", {
+        method: "PATCH",
+        json: { name: "الكتاب الجديد" },
+      }),
+    );
+    const payload = vi
+      .mocked(request)
+      .mock.calls.find(
+        ([path, options]) =>
+          path === "/products/7" && options?.method === "PATCH",
+      )?.[1]?.json;
+    expect(payload).not.toHaveProperty("initialQuantity");
+    expect(payload).not.toHaveProperty("id");
+    expect(payload).not.toHaveProperty("manufacturerBarcode");
+  });
+
+  it("renders field errors, focuses the invalid field and preserves edits", async () => {
+    vi.mocked(request).mockRejectedValueOnce(
+      new ApiFailure(
+        {
+          code: "VALIDATION_ERROR",
+          message: "Vérifiez les informations saisies.",
+          fieldErrors: {
+            sellingPriceCents: ["Le prix doit être supérieur ou égal à zéro."],
+          },
+        },
+        400,
+      ),
+    );
+    renderRoute(false, "/products/7/edit");
+    const name = await screen.findByLabelText("Nom");
+    fireEvent.change(name, { target: { value: "Nom conservé" } });
+    const price = screen.getByLabelText("Prix de vente MAD");
+    fireEvent.change(price, {
+      target: { value: "21" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Enregistrer les modifications" }));
+    expect(
+      await screen.findByText("Le prix doit être supérieur ou égal à zéro."),
+    ).toBeVisible();
+    expect(name).toHaveValue("Nom conservé");
+    await waitFor(() => expect(price).toHaveFocus());
   });
 });

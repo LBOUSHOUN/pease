@@ -203,6 +203,78 @@ function cookie(response: { headers: Record<string, unknown> }) {
 }
 
 describe("online authentication", () => {
+  it("resets only an existing local user, revokes sessions and authenticates with the new password", async () => {
+    await owner();
+    const oldLogin = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { login: "owner", password: "Secret123" },
+    });
+    expect(oldLogin.statusCode).toBe(200);
+    const oldCookie = cookie(oldLogin);
+    const [openSessions] =
+      await database.sql`select count(*)::int count from sessions where revoked_at is null`;
+    const before = await database.sql`select count(*)::int count from users`;
+    const { resetLocalUserPassword } =
+      await import("../src/local-password-reset.js");
+
+    await expect(
+      resetLocalUserPassword({
+        databaseUrl: testUrl,
+        nodeEnv: "test",
+        login: "missing-user",
+        password: "Nouveau123",
+      }),
+    ).rejects.toThrow(/Aucun utilisateur n’a été créé/);
+    const afterMissing = await database.sql`select count(*)::int count from users`;
+    expect(afterMissing[0]!.count).toBe(before[0]!.count);
+
+    const reset = await resetLocalUserPassword({
+      databaseUrl: testUrl,
+      nodeEnv: "test",
+      login: " OWNER ",
+      password: "Nouveau123",
+    });
+    expect(reset).toEqual({
+      username: "owner",
+      revokedSessions: openSessions!.count,
+    });
+    expect(JSON.stringify(reset)).not.toContain("Nouveau123");
+    expect(JSON.stringify(reset)).not.toContain("passwordHash");
+    expect(
+      (
+        await app.inject({
+          url: "/api/auth/me",
+          headers: { cookie: oldCookie },
+        })
+      ).statusCode,
+    ).toBe(401);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/auth/login",
+          payload: { login: "owner", password: "Secret123" },
+        })
+      ).statusCode,
+    ).toBe(401);
+
+    const newLogin = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { login: "owner", password: "Nouveau123" },
+    });
+    expect(newLogin.statusCode, newLogin.body).toBe(200);
+    expect(
+      (
+        await app.inject({
+          url: "/api/auth/me",
+          headers: { cookie: cookie(newLogin) },
+        })
+      ).statusCode,
+    ).toBe(200);
+  });
+
   it("uses a host-only secure SameSite=Lax browser cookie in production", async () => {
     const { sessionCookieOptions } = await import("../src/auth.js");
     expect(sessionCookieOptions(true)).toEqual({
@@ -777,6 +849,80 @@ describe("online catalog and stock", () => {
         })
       ).statusCode,
     ).toBe(409);
+  });
+  it("updates one field without resubmitting legacy data and reports precise conflicts", async () => {
+    const session = await phase2Owner();
+    const cat = (await category(session)).json();
+    const first = (
+      await app.inject({
+        method: "POST",
+        url: "/api/products",
+        headers: { cookie: session },
+        payload: productBody(cat.id, {
+          name: "Produit UPC",
+          sku: null,
+          manufacturerBarcode: "941798495231",
+        }),
+      })
+    ).json();
+    const second = (
+      await app.inject({
+        method: "POST",
+        url: "/api/products",
+        headers: { cookie: session },
+        payload: productBody(cat.id, {
+          name: "Autre produit",
+          sku: "AUTRE-1",
+          manufacturerBarcode: "012345678905",
+        }),
+      })
+    ).json();
+
+    const renamed = await app.inject({
+      method: "PATCH",
+      url: `/api/products/${first.id}`,
+      headers: { cookie: session },
+      payload: { name: "كتاب فرنسي" },
+    });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json()).toMatchObject({
+      name: "كتاب فرنسي",
+      manufacturerBarcode: "941798495231",
+      sku: null,
+    });
+
+    const unchangedBarcode = await app.inject({
+      method: "PATCH",
+      url: `/api/products/${first.id}`,
+      headers: { cookie: session },
+      payload: { manufacturerBarcode: "941798495231" },
+    });
+    expect(unchangedBarcode.statusCode).toBe(200);
+
+    const duplicate = await app.inject({
+      method: "PATCH",
+      url: `/api/products/${first.id}`,
+      headers: { cookie: session },
+      payload: { manufacturerBarcode: second.manufacturerBarcode },
+    });
+    expect(duplicate.statusCode).toBe(400);
+    expect(duplicate.json()).toMatchObject({
+      code: "VALIDATION_ERROR",
+      fieldErrors: {
+        manufacturerBarcode: [
+          "Ce code-barres est déjà utilisé par un autre produit.",
+        ],
+      },
+    });
+
+    const unsupported = await app.inject({
+      method: "PATCH",
+      url: `/api/products/${first.id}`,
+      headers: { cookie: session },
+      payload: { name: "Nom", initialQuantity: 0 },
+    });
+    expect(unsupported.statusCode).toBe(400);
+    expect(unsupported.json().fieldErrors.initialQuantity).toBeTruthy();
   });
   it("looks up and filters products by every stable identifier", async () => {
     const session = await phase2Owner(),

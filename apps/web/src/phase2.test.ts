@@ -28,15 +28,25 @@ describe("Phase 2 web utilities", () => {
   });
   it("uses the actual rendered product action menu for list and detail lifecycle actions", () => {
     const source = readFileSync(new URL("./Phase2.tsx", import.meta.url), "utf8");
+    const dropdown = readFileSync(
+      new URL("./PortalDropdown.tsx", import.meta.url),
+      "utf8",
+    );
     const styles = readFileSync(new URL("./style.css", import.meta.url), "utf8");
     expect(source).toContain("function ProductActionsMenu");
-    expect(source).toContain('aria-haspopup="menu"');
-    expect(source).toContain('event.key === "Escape"');
+    expect(source).toContain('<PortalDropdown label="Actions">');
+    expect(dropdown).toContain('aria-haspopup="menu"');
+    expect(dropdown).toContain('event.key === "Escape"');
+    expect(dropdown).toContain("createPortal");
+    expect(dropdown).toContain(
+      'window.addEventListener("scroll", update, true)',
+    );
     expect(source).toContain("<ProductActionsMenu product={x} user={user}");
     expect(source).toContain("product-detail-actions");
     expect(source).toContain("showDeleteExplanation");
     expect(styles).toContain(".action-menu-panel");
-    expect(styles).toContain("z-index: 20");
+    expect(styles).toContain(".action-menu-portal");
+    expect(styles).toContain("z-index: 1000");
   });
   it("converts MAD without floating-point rounding", () => {
     expect(madToCents("12.34")).toBe(1234);

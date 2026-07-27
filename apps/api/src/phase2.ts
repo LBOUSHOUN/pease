@@ -54,6 +54,31 @@ const bad = (
     fieldErrors,
     requestId: id,
   });
+const validationFields = (error: {
+  issues: Array<{
+    code: string;
+    path: PropertyKey[];
+    message: string;
+    keys?: string[];
+  }>;
+}) => {
+  const fields: Record<string, string[]> = {};
+  for (const issue of error.issues) {
+    const names =
+      issue.code === "unrecognized_keys" && issue.keys?.length
+        ? issue.keys
+        : typeof issue.path[0] === "string"
+          ? [issue.path[0]]
+          : [];
+    for (const name of names)
+      (fields[name] ??= []).push(
+        issue.code === "unrecognized_keys"
+          ? "Ce champ n’est pas accepté lors de la modification."
+          : issue.message,
+      );
+  }
+  return fields;
+};
 const absent = (r: FastifyReply, id: string, message: string) =>
   r.code(404).send({ code: "NOT_FOUND", message, requestId: id });
 const clash = (r: FastifyReply, id: string, message: string) =>
@@ -702,7 +727,7 @@ export async function registerPhase2(app: FastifyInstance) {
         return bad(
           reply,
           req.id,
-          p.success ? undefined : p.error.flatten().fieldErrors,
+          p.success ? undefined : validationFields(p.error),
         );
       try {
         const result = await db.transaction(async (tx) => {
@@ -712,6 +737,34 @@ export async function registerPhase2(app: FastifyInstance) {
             .where(eq(products.id, id.data.id))
             .limit(1);
           if (!old) return null;
+          if (p.data.manufacturerBarcode) {
+            const [duplicate] = await tx
+              .select({ id: products.id })
+              .from(products)
+              .where(
+                and(
+                  eq(products.manufacturerBarcode, p.data.manufacturerBarcode),
+                  raw`${products.id} <> ${old.id}`,
+                ),
+              )
+              .limit(1);
+            if (duplicate)
+              throw Object.assign(new Error(), { kind: "duplicate_barcode" });
+          }
+          if (p.data.sku) {
+            const [duplicate] = await tx
+              .select({ id: products.id })
+              .from(products)
+              .where(
+                and(
+                  eq(products.sku, p.data.sku),
+                  raw`${products.id} <> ${old.id}`,
+                ),
+              )
+              .limit(1);
+            if (duplicate)
+              throw Object.assign(new Error(), { kind: "duplicate_sku" });
+          }
           if (p.data.categoryId) {
             const [cat] = await tx
               .select()
@@ -775,6 +828,16 @@ export async function registerPhase2(app: FastifyInstance) {
         if (!result) return absent(reply, req.id, "Produit introuvable.");
         return safe(req, { ...result, categoryName: null });
       } catch (e) {
+        if ((e as { kind?: string }).kind === "duplicate_barcode")
+          return bad(reply, req.id, {
+            manufacturerBarcode: [
+              "Ce code-barres est déjà utilisé par un autre produit.",
+            ],
+          });
+        if ((e as { kind?: string }).kind === "duplicate_sku")
+          return bad(reply, req.id, {
+            sku: ["Ce SKU est déjà utilisé par un autre produit."],
+          });
         if (unique(e))
           return clash(reply, req.id, "Le SKU ou le code-barres existe déjà.");
         if ((e as { kind?: string }).kind === "category")
